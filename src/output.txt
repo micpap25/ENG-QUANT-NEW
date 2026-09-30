@@ -1,0 +1,211 @@
+Iteration 1:
+Primal objective:   2.68813802e+01 
+Dual objective:     -9.06007554e+02
+
+Primal residual:    1.29e+02
+Dual residual:      7.46e+01
+Complementarity:    9.26e+03
+
+Iteration 2:
+Primal objective:   -3.75161463e+00
+Dual objective:     -9.32559810e+02
+
+Primal residual:    6.46e+00
+Dual residual:      3.73e+00
+Complementarity:    1.34e+03
+
+Iteration 3:
+Primal objective:   -3.28004688e+00
+Dual objective:     -4.09687309e+02
+
+Primal residual:    3.23e-01
+Dual residual:      1.86e-01
+Complementarity:    4.16e+02
+
+Iteration 4:
+Primal objective:   -2.84788556e+00
+Dual objective:     -7.02368093e+01
+
+Primal residual:    1.62e-02
+Dual residual:      9.32e-03
+Complementarity:    6.75e+01
+
+Iteration 5:
+Primal objective:   -2.75748781e+00
+Dual objective:     -1.26015676e+01
+
+Primal residual:    8.08e-04
+Dual residual:      4.66e-04
+Complementarity:    9.84e+00
+
+Iteration 6:
+Primal objective:   -3.82377128e+00
+Dual objective:     -5.25151381e+00
+
+Primal residual:    4.04e-05
+Dual residual:      2.33e-05
+Complementarity:    1.43e+00
+
+Iteration 7:
+Primal objective:   -4.85947163e+00
+Dual objective:     -5.06649050e+00
+
+Primal residual:    2.02e-06
+Dual residual:      1.17e-06
+Complementarity:    2.07e-01
+
+Iteration 8:
+Primal objective:   -4.98265160e+00
+Dual objective:     -5.01266946e+00
+
+Primal residual:    1.01e-07
+Dual residual:      5.83e-08
+Complementarity:    3.00e-02
+
+Iteration 9:
+Primal objective:   -4.99769495e+00
+Dual objective:     -5.00204755e+00
+
+Primal residual:    5.05e-09
+Dual residual:      2.91e-09
+Complementarity:    4.35e-03
+
+Iteration 10:
+Primal objective:   -4.99967775e+00
+Dual objective:     -5.00030887e+00
+
+Primal residual:    2.52e-10
+Dual residual:      1.46e-10
+Complementarity:    6.31e-04
+
+Iteration 11:
+Primal objective:   -4.99995390e+00
+Dual objective:     -5.00004542e+00
+
+Primal residual:    1.26e-11
+Dual residual:      7.78e-12
+Complementarity:    9.15e-05
+
+Iteration 12:
+Primal objective:   -4.99999335e+00
+Dual objective:     -5.00000662e+00
+
+Primal residual:    6.32e-13
+Dual residual:      1.81e-11
+Complementarity:    1.33e-05
+
+Iteration 13:
+Primal objective:   -4.99999904e+00
+Dual objective:     -5.00000096e+00
+
+Primal residual:    3.03e-14
+Dual residual:      3.35e-11
+Complementarity:    1.92e-06
+
+Iteration 14:
+Primal objective:   -4.99999986e+00
+Dual objective:     -5.00000014e+00
+
+Primal residual:    1.78e-15
+Dual residual:      9.37e-10
+Complementarity:    2.79e-07
+
+Iteration 15:
+Primal objective:   -4.99999998e+00
+Dual objective:     -5.00000003e+00
+
+Primal residual:    1.78e-15
+Dual residual:      5.85e-09
+Complementarity:    4.05e-08
+
+Iteration 16:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00000003e+00
+
+Primal residual:    0.00e+00
+Dual residual:      2.19e-08
+Complementarity:    5.87e-09
+
+Iteration 17:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00000017e+00
+
+Primal residual:    8.88e-16
+Dual residual:      2.95e-07
+Complementarity:    8.51e-10
+
+Iteration 18:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00000095e+00
+
+Primal residual:    1.26e-15
+Dual residual:      1.37e-06
+Complementarity:    1.23e-10
+
+Iteration 19:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00000672e+00
+
+Primal residual:    2.51e-15
+Dual residual:      6.14e-06
+Complementarity:    1.79e-11
+
+Iteration 20:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00009943e+00
+
+Primal residual:    1.26e-15
+Dual residual:      7.10e-05
+Complementarity:    2.59e-12
+
+Iteration 21:
+Primal objective:   -5.00000000e+00
+Dual objective:     -4.99951504e+00
+
+Primal residual:    1.26e-15
+Dual residual:      4.89e-04
+Complementarity:    3.76e-13
+
+Iteration 22:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.00329598e+00
+
+Primal residual:    8.88e-16
+Dual residual:      2.34e-03
+Complementarity:    5.45e-14
+
+Iteration 23:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.01374956e+00
+
+Primal residual:    1.26e-15
+Dual residual:      9.87e-03
+Complementarity:    7.93e-15
+
+Iteration 24:
+Primal objective:   -5.00000000e+00
+Dual objective:     -4.79541456e+00
+
+Primal residual:    2.51e-15
+Dual residual:      1.88e-01
+Complementarity:    1.14e-15
+
+Iteration 25:
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.25792060e+00
+
+Primal residual:    0.00e+00
+Dual residual:      1.90e-01
+Complementarity:    1.51e-16
+
+Solution is below target precision.
+The algorithm stopped after 26 iterations in 0.00 seconds.
+
+Primal objective:   -5.00000000e+00
+Dual objective:     -5.87132895e+00
+
+Primal residual:    0.00e+00
+Dual residual:      6.28e-01
+Complementarity:    2.73e-17
+
+[-1. -1.]
