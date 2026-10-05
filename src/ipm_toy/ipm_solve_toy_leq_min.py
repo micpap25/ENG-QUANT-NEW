@@ -52,8 +52,10 @@ def ipm_solve_toy(beta: float = 0.1, beta2: float = 1 - 5e-4, omega: float = 1e2
         S = np.diag(s)
         Z = np.diag(z)
 
-        ATZ_1 = np.dot(A.T, np.linalg.inv(Z))
-        ATZ_1Y = np.dot(ATZ_1, Y)
+        Z_1 = np.linalg.inv(Z)
+        Z_1Y = np.dot(Z_1, Y)
+
+        ATZ_1Y = np.dot(A.T, Z_1Y)
         Ax = np.dot(A, x)
         b_Ax = b - Ax
         ATy = np.dot(A.T, y)
@@ -66,9 +68,16 @@ def ipm_solve_toy(beta: float = 0.1, beta2: float = 1 - 5e-4, omega: float = 1e2
         delta_x = np.linalg.solve(M, r)
 
         # Recover the steps
+
         Adelta_x = np.dot(A, delta_x)
-        delta_y = np.dot(np.linalg.inv(Z), np.dot(Y, Ax + Adelta_x - b) - (mu * np.ones(i)))
+        # delta_y = np.dot(Z_1Y, Ax + Adelta_x - b) - np.dot(Z_1, mu * np.ones(i))
+        # delta_z = b - Ax - z - Adelta_x
+        # delta_s = c - ATy - s - np.dot(A.T, delta_y)
+
+        # print(f"Old term: {Ax + Adelta_x - b}")
+
         delta_z = b - Ax - z - Adelta_x
+        delta_y = -np.dot(Z_1Y, z + delta_z) - np.dot(Z_1, mu * np.ones(i))
         delta_s = c - ATy - s - np.dot(A.T, delta_y)
 
         alpha_star_x = ratio(x, delta_x)

@@ -10,7 +10,7 @@ import numpy as np
 # Take in an LP from a JSON, return A, b, G, h, u, c
 # All variables should have a lower bound of exactly 0 (use remap_lower_bounds.py)
 # Use Gurobi to make it easy
-def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool = True,
+def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool = False,
                                 verbose: bool = False) -> tuple[Any, Any, Any, Any, Any, Any]:
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)

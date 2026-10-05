@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from ipm_new.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
 import numpy as np
 import time
 
 import scipy.linalg
 import scipy.sparse
+
+import warnings
+
+warnings.filterwarnings('error', category=scipy.sparse.linalg.MatrixRankWarning)
 
 # Solve a GasNet problem in a relaxed LP form.
 
@@ -18,13 +23,14 @@ def ratio(x_vec, delta_x_vec):
 def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
                 xi: float = 1 - 5e-8, omega: float = 1e4,
                 w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .9,
-                epsilon: float = 1e-12, zeta_n: float = 5e-2, zeta_r: float = 1e-3,
-                alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-4,
                 tau_init: float = 1e-4, scaling_tau: bool = False,
+                epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = 5e-1,
+                alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-4,
+                sparse: bool = True,
                 verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
-    # Gurobi output pops up here because of license file# Dual solution is (0, 4, 0), obj = 8
+    # Dual solution is (0, 4, 0), obj = 8
     A = np.array([[1, 0, 1], \
                     [1, 2, 0]])
     b = np.array([3, 8])
@@ -32,6 +38,11 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     h = np.array([4])
     c = np.array([1, -2, 1])
     u = np.array([5, 5, 5])
+
+    if sparse:
+        A = scipy.sparse.csc_array(A)
+        G = scipy.sparse.csc_array(G)
+    
     i_bar = len(b)
     e_bar = len(h)
     n = len(c) # Number of variables
@@ -82,6 +93,23 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     test = [0, 0, 0, 0, 0, 0]
 
     while True:
+        # Iteration values
+        Ax = A @ x
+        Gx = G @ x
+        b_Ax = b - Ax
+        h_Gx = h - Gx
+        u_x = u - x
+
+        r_p = np.linalg.norm(
+            A.T @ y + G.T @ (w1 - w2) + q - lam + c
+        )
+        r_d = np.linalg.norm(np.concat((
+            A @ x + z1 - b,
+            Gx + z2 - h,
+            -Gx + z3 + h,
+            x + z4 - u,
+            -x + z5
+        )))
         r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
             + np.dot(q, z4) + np.dot(lam, z5)
 
@@ -91,38 +119,45 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
         else:
             tau = tau_init
 
-        Ax = A @ x
-        b_Ax = b - Ax
-        Gx = G @ x
-        h_Gx = h - Gx
-        u_x = u - x
-
-        yz1_1 = y / z1
-        w1z2_1 = w1 / z2
-        w2z3_1 = w2 / z3
-        qz4_1 = q / z4
-        lamz5_1 = lam / z5
-
-        ATZ1_1Y = A.T * yz1_1
-        GTZ_1W = G.T * (w1z2_1 + w2z3_1)
-
-        ATy = A.T @ y
-        GTw1_w2 = G.T @ (w1 - w2)
-
-        M = (ATZ1_1Y @ A + GTZ_1W @ G
-            + np.diag(qz4_1 + lamz5_1))
-
         z1_1 = np.reciprocal(z1)
         z2_1 = np.reciprocal(z2)
         z3_1 = np.reciprocal(z3)
         z4_1 = np.reciprocal(z4)
         z5_1 = np.reciprocal(z5)
 
+        yz1_1 = y * z1_1
+        w1z2_1 = w1 * z2_1
+        w2z3_1 = w2 * z3_1
+        qz4_1 = q * z4_1
+        lamz5_1 = lam * z5_1
+
+        if sparse:
+            ATZ1_1Y = A.T.multiply(yz1_1)
+            GTZ_1W = G.T.multiply(w1z2_1 + w2z3_1)
+        else:
+            ATZ1_1Y = A.T * yz1_1
+            GTZ_1W = G.T * (w1z2_1 + w2z3_1)
+
+        ATy = A.T @ y
+        GTw1_w2 = G.T @ (w1 - w2)
+
+        if sparse:
+            M = (ATZ1_1Y @ A + GTZ_1W @ G
+                + scipy.sparse.diags_array(qz4_1 + lamz5_1)).tocsc()
+        else:
+            M = (ATZ1_1Y @ A + GTZ_1W @ G
+                + np.diag(qz4_1 + lamz5_1))
+
         r_aff = ATZ1_1Y @ b_Ax + GTZ_1W @ h_Gx + qz4_1 * u_x - lamz5_1 * x \
             - c - ATy - GTw1_w2 - q + lam
         r_cent = A.T @ z1_1 + G.T @ (z2_1 - z3_1) + z4_1 - z5_1
 
-        delta_x = np.linalg.solve(M, r_aff - mu * r_cent)
+        r = r_aff - mu * r_cent
+
+        if sparse:
+            delta_x = scipy.sparse.linalg.spsolve(M, r)
+        else:
+            delta_x = np.linalg.solve(M, r)
 
         # Recover the steps
         Adelta_x = A @ delta_x
@@ -133,10 +168,10 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
         delta_z3 = Gx - h - z3 + Gdelta_x
         delta_z4 = u - x - z4 - delta_x
         delta_z5 = x - z5 + delta_x
-        delta_y = (-y * (z1 + delta_z1) + mu) / z1
-        delta_w1 = (-w1 * (z2 + delta_z2) + mu) / z2
-        delta_w2 = (mu - w2 * (z3 + delta_z3)) / z3
-        delta_q = (-q * (z4 + delta_z4) + mu) / z4
+        delta_y = (-y * delta_z1 + mu) * z1_1 - y
+        delta_w1 = (-w1 * delta_z2 + mu) * z2_1 - w1
+        delta_w2 = (mu - w2 * delta_z3) * z3_1 - w2
+        delta_q = (-q * delta_z4 + mu) * z4_1 - q
         delta_lam = c + ATy + GTw1_w2 + q - lam \
             + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
 
@@ -179,7 +214,6 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             r_c_alpha = np.dot(y_alpha, z1_alpha) + np.dot(w1_alpha, z2_alpha) \
                 + np.dot(w2_alpha, z3_alpha) + np.dot(q_alpha, z4_alpha) + np.dot(lam_alpha, z5_alpha)
             mu_alpha = r_c_alpha / m
-            mu_ratio = mu_alpha / mu0
 
             r_c_vec = np.concat((y_alpha * z1_alpha, w1_alpha * z2_alpha, w2_alpha * z3_alpha,
                                     q_alpha * z4_alpha, lam_alpha * z5_alpha))
@@ -195,22 +229,24 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             if not is_neighbor:
                 continue
 
+            rc_ratio = r_c_alpha / r_c
             # The primal residual should fall with the complementarity gap
             r_p_alpha = np.linalg.norm(
                 A.T @ y_alpha + G.T @ (w1_alpha - w2_alpha) + q_alpha - lam_alpha + c
             )
+            print(f"r_p_alpha / r_p: {r_p_alpha / r_p}")
+            print(f"rc_ratio: {rc_ratio}")
 
-            print(r_p0 * mu_alpha/zeta_r)
-            if r_p_alpha > max(r_p0 * mu_ratio/zeta_r, epsilon):
+            if r_p_alpha > max(r_p * rc_ratio/zeta_r, epsilon):
                 is_neighbor = False
                 test[1] += 1
                 continue
 
-            # if r_p_alpha < r_p0 * mu_ratio * zeta_r:
-            #     is_neighbor = False
-            #     # print("Limited by primal residual")
-            #     test[2] += 1
-            #     continue
+            if r_p_alpha < r_p * rc_ratio * zeta_r:
+                is_neighbor = False
+                # print("Limited by primal residual")
+                test[2] += 1
+                continue
 
             # The dual residual should fall with the complementarity gap
             Gx_alpha = G @ x_alpha
@@ -222,16 +258,18 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
                 -x_alpha + z5_alpha
             )))
 
-            if r_d_alpha > max(r_d0 * mu_ratio/zeta_r, epsilon):
+            print(f"r_d_alpha / r_d: {r_d_alpha / r_d}")
+            print(f"rc_ratio: {rc_ratio}")
+            if r_d_alpha > max(r_d * rc_ratio/zeta_r, epsilon):
                 is_neighbor = False
                 test[3] += 1
                 continue
 
-            # if r_d_alpha < r_d0 * mu_ratio * zeta_r:
-            #     is_neighbor = False
-            #     # print("Limited by dual residual")
-            #     test[4] += 1
-            #     continue
+            if r_d_alpha < r_d * rc_ratio * zeta_r:
+                is_neighbor = False
+                # print("Limited by dual residual")
+                test[4] += 1
+                continue
 
             # The complementarity gap should be decreasing (ignore for centering steps)
             if r_c_alpha > (1 - alpha * (1 - xi)) * r_c:
@@ -277,11 +315,11 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             w1 -= alpha_D * D
             w2 -= alpha_D * D
 
-        # if max(abs(entry) for entry in np.concat(
-        #     (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)
-        # )) > 2 * m * omega:
-        #     print("The problem is infeasible.")
-        #     break
+        if max(abs(entry) for entry in np.concat(
+            (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)
+        )) > 2 * m * omega:
+            print("The problem is infeasible.")
+            break
 
         iteration += 1
 

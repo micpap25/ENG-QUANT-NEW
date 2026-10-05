@@ -167,7 +167,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     if not saund_tom:
         saund_tom_factor = 0
 
-    # Gurobi output pops up here because of license file# Dual solution is (0, 4, 0), obj = 8
+    # Dual solution is (0, 4, 0), obj = 8
     A = np.array([[1, 0, 1], \
                     [1, 2, 0]])
     b = np.array([3, 8])

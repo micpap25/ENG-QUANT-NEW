@@ -203,13 +203,13 @@ def factorize_system(M, sparse, ruiz, ilu, saund_tom, verbose,
 
 def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
                 xi: float = 1 - 5e-8, omega: float = 1e4,
-                w_update: bool = True, predictor_corrector: bool = True,
+                w_update: bool = True, predictor_corrector: bool = False,
                 D_bound: float = 1 - 5e-8, D_mult: float = .9,
-                epsilon: float = 1e-8, zeta_n: float = 1e-2, zeta_r: float = 1e-3,
-                alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
+                epsilon: float = 1e-10, zeta_n: float = 5e-2, zeta_r: float = 1e-3,
+                alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-4,
                 saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                tau_init: float = 1e2, scaling_tau: bool = True,
-                sparse: bool = True, ruiz: bool = False, ilu: bool = False,
+                tau_init: float = 1e-4, scaling_tau: bool = False,
+                sparse: bool = False, ruiz: bool = False, ilu: bool = False,
                 ilu_refinement: int = 3, ilu_drop_tol: float = 1e-10,
                 verbose: bool = False):
     np.set_printoptions(linewidth=200)
@@ -419,17 +419,25 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
         Adelta_x = A @ delta_x
         Gdelta_x = G @ delta_x
 
-        delta_y = (y * (Ax + Adelta_x - b) + mu) / z1 - corrector_y
-        delta_w1 = (w1 * (Gx + Gdelta_x - h) + mu) / z2 - corrector_w1
-        delta_w2 = (mu - w2 * (Gx + Gdelta_x - h)) / z3 - corrector_w2
-        delta_q = (q * (x + delta_x - u) + mu) / z4 - corrector_q
-        delta_lam = c + ATy + GTw1_w2 + q - lam \
-            + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
         delta_z1 = b - Ax - z1 - Adelta_x
         delta_z2 = h - Gx - z2 - Gdelta_x
         delta_z3 = Gx - h - z3 + Gdelta_x
         delta_z4 = u - x - z4 - delta_x
         delta_z5 = x - z5 + delta_x
+        delta_y = (-y * (z1 + delta_z1) + mu) / z1
+        delta_w1 = (-w1 * (z2 + delta_z2) + mu) / z2
+        delta_w2 = (mu - w2 * (z3 + delta_z3)) / z3
+        delta_q = (-q * (z4 + delta_z4) + mu) / z4
+        delta_lam = c + ATy + GTw1_w2 + q - lam \
+            + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
+
+        # Bad code for comparison
+        # delta_y = (y * (Ax + Adelta_x - b) + mu) / z1
+        # delta_w1 = (w1 * (Gx + Gdelta_x - h) + mu) / z2
+        # delta_w2 = (mu - w2 * (Gx + Gdelta_x - h)) / z3
+        # delta_q = (q * (x + delta_x - u) + mu) / z4
+        # delta_lam = c + ATy + GTw1_w2 + q - lam \
+        #     + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
 
         alpha_star_y = ratio(y, delta_y)
         alpha_star_w1 = ratio(w1, delta_w1)
