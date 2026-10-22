@@ -209,7 +209,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-4,
                 saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                 tau_init: float = 1e-4, scaling_tau: bool = False,
-                sparse: bool = False, ruiz: bool = False, ilu: bool = False,
+                sparse: bool = True, ruiz: bool = False, ilu: bool = False,
                 ilu_refinement: int = 3, ilu_drop_tol: float = 1e-10,
                 verbose: bool = False):
     np.set_printoptions(linewidth=200)
@@ -221,7 +221,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
         saund_tom_factor = 0
 
     # Gurobi output pops up here because of license file
-    A, b, G, h, u, c = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
+    A, b, G, h, u, c, const = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
     i_bar = len(b)
     e_bar = len(h)
     n = len(c) # Number of variables
@@ -605,8 +605,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
 
         if verbose:
             print(f"Iteration {iteration}:")
-            primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q)
-            dual_obj = np.dot(-c, x)  # pylint: disable=invalid-unary-operand-type
+            primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
+            dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
             print(f"{'Primal objective:':20}{primal_obj:<15.8e}")
             print(f"{'Dual objective:':20}{dual_obj:<15.8e}")
             print()
@@ -626,8 +626,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             print()
 
     run_time = time.time() - start_time
-    primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q)
-    dual_obj = np.dot(-c, x)  # pylint: disable=invalid-unary-operand-type
+    primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
+    dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':20}{primal_obj:<15.8e}")
@@ -653,4 +653,4 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     return -dual_obj, run_time, x, r_c
 
 if __name__ == "__main__":
-    ipm_solve(verbose=True)
+    ipm_solve(verbose=False)

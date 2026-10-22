@@ -26,18 +26,18 @@ def solve_system(M, r, sparse):
     else:
         return np.linalg.solve(M, r)
 
-def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
-                xi: float = 1 - 5e-8, omega: float = 1e4,
+def ipm_solve(f_name: str = "linear_approx.json", beta: float = .05,
+                xi: float = 1 - 5e-4, omega: float = 1e4,
                 w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .9,
                 tau_init: float = 1e-4, scaling_tau: bool = False,
-                epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .75,
+                epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .8,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
-                sparse: bool = False,
+                sparse: bool = True,
                 verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
-    A, b, G, h, u, c = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
+    A, b, G, h, u, c, const = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
 
     # Toy problem for testing, Dual solution is (0, 4, 0), obj = 8
     # A = np.array([[1, 0, 1], \
@@ -47,6 +47,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     # h = np.array([4])
     # c = np.array([1, -2, 1])
     # u = np.array([5, 5, 5])
+    # const = 0
 
     # if sparse:
     #     A = scipy.sparse.csc_array(A)
@@ -99,7 +100,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     iteration = 0
     start_time = time.time()
 
-    test = [0, 0, 0, 0, 0, 0]
+    test = [0, 0, 0, 0, 0, 0, 0]
 
     while True:
         # Iteration values
@@ -123,6 +124,10 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             + np.dot(q, z4) + np.dot(lam, z5)
 
         mu = r_c * beta / m
+
+        if verbose:
+            print(f"mu: {mu}")
+
         if scaling_tau:
             tau = tau_init * mu
         else:
@@ -190,16 +195,28 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
         # delta_lam = c + ATy + GTw1_w2 + q - lam \
         #     + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
 
+        print()
         alpha_star_y = ratio(y, delta_y)
+        # print(f"alpha_star_y = {alpha_star_y}")
         alpha_star_w1 = ratio(w1, delta_w1)
+        print(f"alpha_star_w1 = {alpha_star_w1}")
         alpha_star_w2 = ratio(w2, delta_w2)
+        print(f"alpha_star_w2 = {alpha_star_w2}")
         alpha_star_q = ratio(q, delta_q)
+        print(f"alpha_star_q = {alpha_star_q}")
         alpha_star_lam = ratio(lam, delta_lam)
+        print(f"alpha_star_lam = {alpha_star_lam}")
         alpha_star_z1 = ratio(z1, delta_z1)
+        print(f"alpha_star_z1 = {alpha_star_z1}")
         alpha_star_z2 = ratio(z2, delta_z2)
+        print(f"alpha_star_z2 = {alpha_star_z2}")
         alpha_star_z3 = ratio(z3, delta_z3)
+        print(f"alpha_star_z3 = {alpha_star_z3}")
         alpha_star_z4 = ratio(z4, delta_z4)
+        print(f"alpha_star_z4 = {alpha_star_z4}")
         alpha_star_z5 = ratio(z5, delta_z5)
+        print(f"alpha_star_z5 = {alpha_star_z5}")
+        print()
 
         alpha_max = min(alpha_star_y, alpha_star_w1,
                         alpha_star_w2, alpha_star_q, alpha_star_lam,
@@ -238,6 +255,10 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
                 if comp < zeta_n * mu_alpha:
                     is_neighbor = False
                     test[0] += 1
+                    break
+                if comp > mu_alpha / zeta_n:
+                    is_neighbor = False
+                    test[6] += 1
                     break
 
             if not is_neighbor:
@@ -319,8 +340,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
 
         # Adjust the w variables (Is this better to do in the newton loop or is here OK?
         # No difference in actual convergence, seems identical)
-        print(f"w1 before update: {w1}")
-        print(f"w2 before update: {w2}")
+        # print(f"w1 before update: {w1}")
+        # print(f"w2 before update: {w2}")
         if w_update:
             D = np.maximum(tau, np.minimum(w1, w2) - tau)
             alpha_D = min(1, np.min((w1 * z2 - (zeta_n * mu_alpha)) / (D * z2)),
@@ -334,8 +355,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             w1 -= alpha_D * D
             w2 -= alpha_D * D
 
-        print(f"w1 after update: {w1}")
-        print(f"w2 after update: {w2}")
+        # print(f"w1 after update: {w1}")
+        # print(f"w2 after update: {w2}")
 
         if max(abs(entry) for entry in np.concat(
             (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)
@@ -356,8 +377,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
 
         if verbose:
             print(f"Iteration {iteration}:")
-            primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q)
-            dual_obj = np.dot(-c, x)  # pylint: disable=invalid-unary-operand-type
+            primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
+            dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
             print(f"{'Primal objective:':20}{primal_obj:<15.8e}")
             print(f"{'Dual objective:':20}{dual_obj:<15.8e}")
             print()
@@ -377,8 +398,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
             print()
 
     run_time = time.time() - start_time
-    primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q)
-    dual_obj = np.dot(-c, x)  # pylint: disable=invalid-unary-operand-type
+    primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
+    dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':20}{primal_obj:<15.8e}")
@@ -399,9 +420,10 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = 0.1,
     print(f"{'Rel. Compl. Gap:':20}{r_c / scale:<8.2e}")
     print()
     if verbose:
+        print(c)
         print(x)
         print(test)
     return -dual_obj, run_time, x, r_c
 
 if __name__ == "__main__":
-    ipm_solve(verbose=True)
+    ipm_solve(verbose=False)

@@ -11,7 +11,7 @@ import numpy as np
 # All variables should have a lower bound of exactly 0 (use remap_lower_bounds.py)
 # Use Gurobi to make it easy
 def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool = False,
-                                verbose: bool = False) -> tuple[Any, Any, Any, Any, Any, Any]:
+                                verbose: bool = False) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -82,6 +82,7 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
     h = b_full[eq_idx]
     u = np.array(m.getAttr("UB", m.getVars()))
     c = np.array(m.getAttr("Obj", m.getVars()))
+    const = objective["expr"]["constant"]
 
     if verbose:
         print(f"A: \n{A.toarray()}")
@@ -90,11 +91,12 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
         print(f"h: \n{h}")
         print(f"u: \n{u}")
         print(f"c: \n{c}")
+        print(f"const: \n{const}")
 
     if sparse:
-        return A, b, G, h, u, c
+        return A, b, G, h, u, c, const
     else:
-        return A.toarray(), b, G.toarray(), h, u, c
+        return A.toarray(), b, G.toarray(), h, u, c, const
 
 
 if __name__ == "__main__":

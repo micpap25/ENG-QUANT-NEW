@@ -94,7 +94,7 @@ def solve_qcp(f_name: str = "linear_approx.json",
 
 
 if __name__ == "__main__":
-    val, time = solve_qcp(f_name="model11_quad_reform_nofix.json", verbose=True)
+    val, time = solve_qcp(f_name="GasLib-24_reform.json", verbose=True)
     # val, time = solve_qcp(f_name="linear_approx.json", verbose=True)
     print("Obj val: " + str(val))
     print("Time: " + str(time))

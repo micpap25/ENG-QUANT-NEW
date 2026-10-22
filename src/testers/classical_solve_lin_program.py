@@ -82,9 +82,9 @@ def solve_lp_return_x(f_name: str = "linear_approx.json",
         print("Model is not feasible")
         return (None, None, None)
     else:
-        # if verbose:
-        #     for variable, gurobi_variable in var_name_to_gurobi_var.items():
-        #         print(variable + ": " + str(gurobi_variable.X))
+        if verbose:
+            for variable, gurobi_variable in var_name_to_gurobi_var.items():
+                print(variable + ": " + str(gurobi_variable.X))
         m.update()
         m.printQuality()
 
