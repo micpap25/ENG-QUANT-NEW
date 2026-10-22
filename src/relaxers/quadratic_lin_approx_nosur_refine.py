@@ -92,6 +92,8 @@ def quadratic_lin_approx_no_surrogate_refine(k: int, outer_approximation: bool,
                     point_1 = points[i]
                     point_2 = points[i+1]
                     lambd = point_2 - point_1
+                    if lambd == 0:
+                        continue
 
                     fun_point_1 = quadratic_coef * point_1**2
                     fun_point_2 = quadratic_coef * point_2**2
