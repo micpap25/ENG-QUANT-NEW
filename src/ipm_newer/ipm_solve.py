@@ -7,9 +7,9 @@ import time
 import scipy.linalg
 import scipy.sparse
 
-import warnings
-
-warnings.filterwarnings('error', category=scipy.sparse.linalg.MatrixRankWarning)
+from qlsas import (LinearSystemProblem, BlockEncodingInversion, DefaultStatePrep,
+                    QuantumLinearSolver, ExecutionConfig, make_backend,
+                    ExactStatevectorReadout, Refiner)
 
 # Solve a GasNet problem in a relaxed LP form.
 
@@ -27,8 +27,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .8,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                 saund_tom: bool = False, saund_tom_factor: float = 0,
-                sparse: bool = True, ilu: bool = False,
-                ilu_refinement: int = 2, ilu_drop_tol: float = 1e-10,
+                sparse: bool = False, qsim: bool = False,
+                ilu: bool = False, ilu_refinement: int = 3, ilu_drop_tol: float = 1e-8,
                 verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
@@ -173,6 +173,52 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         r_cent = A.T @ z1_1 + G.T @ (z2_1 - z3_1) + z4_1 - z5_1
 
         r = r_aff - mu * r_cent
+
+
+        if qsim:
+            if sparse:
+                print("Sparse and qsim are incompatable")
+                return
+
+            M_csc = scipy.sparse.csc_matrix(M)
+            M_ilu = scipy.sparse.linalg.spilu(
+                M_csc, drop_tol=ilu_drop_tol
+            )
+
+            qM = M_ilu.solve(M)
+            if verbose:
+                print(f"Cond no.: {np.linalg.cond(qM)}")
+            qr = M_ilu.solve(r)
+
+            next_pow_2 = int(2 ** np.ceil(np.log2(n)))
+
+            diff = next_pow_2 - n
+
+            if diff > 0:
+                top_padded = np.hstack((qM, np.zeros((n, diff))))
+                bottom_padded = np.hstack((np.zeros((diff, n)), np.eye(diff)))
+                qM_padded = np.vstack((top_padded, bottom_padded))
+                qr_padded = np.concatenate((qr, np.zeros(diff)))
+            else:
+                qM_padded = qM
+                qr_padded = qr
+
+            prob = LinearSystemProblem.from_matrix(qM_padded, qr_padded)
+
+            solver = QuantumLinearSolver(
+                qlsa=BlockEncodingInversion(method="QSVT", precision=0.1),
+                state_prep=DefaultStatePrep(),
+                readout=ExactStatevectorReadout(),
+                backend=make_backend("qrisp"),
+                config=ExecutionConfig(success_mode="rus"),
+            )
+
+            if verbose:
+                print("Encoded problem")
+
+            result = solver.solve(prob)
+            solution = result.solution[:n]
+            print(solution)
 
         if ilu:
             M_csc = scipy.sparse.csc_matrix(M)

@@ -7,9 +7,9 @@ import time
 import scipy.linalg
 import scipy.sparse
 
-import warnings
-
-warnings.filterwarnings('error', category=scipy.sparse.linalg.MatrixRankWarning)
+from qlsas import (LinearSystemProblem, BlockEncodingInversion, DefaultStatePrep,
+                    QuantumLinearSolver, ExecutionConfig, make_backend,
+                    ExactStatevectorReadout, Refiner)
 
 # Solve a GasNet problem in a relaxed LP form.
 
@@ -22,11 +22,11 @@ def ratio(x_vec, delta_x_vec):
 
 def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                         xi: float = 1 - 5e-4, omega: float = 1e4,
-                        epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .8,
+                        epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .5,
                         alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                         saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                        sparse: bool = True, ilu: bool = False,
-                        ilu_refinement: int = 3, ilu_drop_tol: float = 1e-8,
+                        sparse: bool = True, qsim: bool = False,
+                        ilu: bool = False, ilu_refinement: int = 3, ilu_drop_tol: float = 1e-4,
                         verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
@@ -92,10 +92,10 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
         h_Gx = h - Gx
         u_x = u - x
 
-        r_p = np.linalg.norm(
+        r_p_norm = np.linalg.norm(
             A.T @ y + G.T @ w + q - lam + c
         )
-        r_d = np.linalg.norm(np.concat((
+        r_d_norm = np.linalg.norm(np.concat((
             A @ x + z1 - b,
             Gx - h,
             x + z2 - u,
@@ -170,11 +170,60 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 ])
         rhs = np.concat((r, h_Gx))
 
+        if qsim:
+            if sparse:
+                print("Sparse and qsim are incompatable")
+                return
+
+            K_csc = scipy.sparse.csc_matrix(K)
+            K_ilu = scipy.sparse.linalg.spilu(
+                K_csc, drop_tol=ilu_drop_tol
+            )
+
+            qK = K_ilu.solve(K)
+            if verbose:
+                print(f"Cond no.: {np.linalg.cond(qK)}")
+            qrhs = K_ilu.solve(rhs)
+                
+            k = n + e_bar
+
+            next_pow_2 = int(2 ** np.ceil(np.log2(k)))
+
+            diff = next_pow_2 - k
+
+            if diff > 0:
+                top_padded = np.hstack((qK, np.zeros((k, diff))))
+                bottom_padded = np.hstack((np.zeros((diff, k)), np.eye(diff)))
+                qK_padded = np.vstack((top_padded, bottom_padded))
+                qrhs_padded = np.concatenate((qrhs, np.zeros(diff)))
+            else:
+                qK_padded = qK
+                qrhs_padded = qrhs
+
+            prob = LinearSystemProblem.from_matrix(qK_padded, qrhs_padded)
+
+            solver = QuantumLinearSolver(
+                qlsa=BlockEncodingInversion(method="QSVT", precision=0.1),
+                state_prep=DefaultStatePrep(),
+                readout=ExactStatevectorReadout(),
+                backend=make_backend("qrisp"),
+                config=ExecutionConfig(success_mode="rus"),
+            )
+
+            if verbose:
+                print("Encoded problem")
+
+            result = solver.solve(prob)
+            solution = result.solution[:k]
+
+            print(solution)
+
         if ilu:
             K_csc = scipy.sparse.csc_matrix(K)
             K_ilu = scipy.sparse.linalg.spilu(
                 K_csc, drop_tol=ilu_drop_tol
             )
+
             solution = K_ilu.solve(rhs)
             if verbose:
                 residual = rhs - K_csc @ solution
@@ -184,7 +233,6 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 )
             for refine_step in range(ilu_refinement):
                 residual = rhs - K_csc @ solution
-                # TODO: Should refinement use ILU or not ILU version?
                 correction = K_ilu.solve(residual)
                 candidate = solution + correction
                 candidate_residual = rhs - K_csc @ candidate
@@ -284,19 +332,19 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             rc_ratio = r_c_alpha / r_c
 
             # The primal residual should fall with the complementarity gap
-            r_p_alpha = np.linalg.norm(
+            r_p_alpha_norm = np.linalg.norm(
                 A.T @ y_alpha + G.T @ w_alpha + q_alpha - lam_alpha + c
             )
 
-            # print(f"r_p_alpha / r_p: {r_p_alpha / r_p}")
+            # print(f"r_p_alpha_norm / r_p_norm: {r_p_alpha_norm / r_p_norm}")
             # print(f"rc_ratio: {rc_ratio}")
 
-            if r_p_alpha > max(r_p * rc_ratio/zeta_r, epsilon):
+            if r_p_alpha_norm > max(r_p_norm * rc_ratio/zeta_r, epsilon):
                 is_neighbor = False
                 test[1] += 1
                 continue
 
-            if r_p_alpha < r_p * rc_ratio * zeta_r:
+            if r_p_alpha_norm < r_p_norm * rc_ratio * zeta_r:
                 is_neighbor = False
                 # print("Limited by primal residual")
                 test[2] += 1
@@ -304,22 +352,22 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
             # The dual residual should fall with the complementarity gap
             Gx_alpha = G @ x_alpha
-            r_d_alpha = np.linalg.norm(np.concat((
+            r_d_alpha_norm = np.linalg.norm(np.concat((
                 A @ x_alpha + z1_alpha - b,
                 Gx_alpha - h,
                 x_alpha + z2_alpha - u,
                 -x_alpha + z3_alpha
             )))
 
-            # print(f"r_d_alpha / r_d: {r_d_alpha / r_d}")
+            # print(f"r_d_alpha_norm / r_d_norm: {r_d_alpha_norm / r_d_norm}")
             # print(f"rc_ratio: {rc_ratio}")
 
-            if r_d_alpha > max(r_d * rc_ratio/zeta_r, epsilon):
+            if r_d_alpha_norm > max(r_d_norm * rc_ratio/zeta_r, epsilon):
                 is_neighbor = False
                 test[3] += 1
                 continue
 
-            if r_d_alpha < r_d * rc_ratio * zeta_r:
+            if r_d_alpha_norm < r_d_norm * rc_ratio * zeta_r:
                 is_neighbor = False
                 # print("Limited by dual residual")
                 test[4] += 1
