@@ -14,7 +14,8 @@ def quadratic_lin_approx_no_surrogate_refine(k: int, outer_approximation: bool,
                                                 remove_division: bool = False,
                                                 endpoints: bool = True,
                                                 f_name: str = "toy.json",
-                                                verbose: bool = False) -> None:
+                                                verbose: bool = False,
+                                                eps: float = 1e-4) -> None:
 
     if not outer_approximation and remove_division:
         print(
@@ -70,6 +71,10 @@ def quadratic_lin_approx_no_surrogate_refine(k: int, outer_approximation: bool,
                     print(f"Approximation points for quadratic variable {quadratic_variable}:\n{points}")
                 for i in range(k):
                     point = points[i]
+                    if i > 0:
+                        if points[i] - points[i-1] <= eps:
+                            continue
+
                     fun_point = quadratic_coef * point**2
 
                     constraint = copy.deepcopy(constraint_data)
@@ -92,7 +97,7 @@ def quadratic_lin_approx_no_surrogate_refine(k: int, outer_approximation: bool,
                     point_1 = points[i]
                     point_2 = points[i+1]
                     lambd = point_2 - point_1
-                    if lambd == 0:
+                    if lambd <= eps:
                         continue
 
                     fun_point_1 = quadratic_coef * point_1**2

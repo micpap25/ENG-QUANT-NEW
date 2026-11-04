@@ -97,7 +97,6 @@ def quadratic_lin_approx_no_surrogate(k: int, outer_approximation: bool,
                     constraint["body"]["quadratic"] = []
                     if remove_division:
                         m = fun_point_2 - fun_point_1
-                        # TODO: Test this line further
                         constraint["body"]["constant"] *= lambd
                         constraint["body"]["constant"] += lambd*fun_point_1 - m*point_1
                     else:
@@ -132,10 +131,10 @@ if __name__ == "__main__":
     K = 10
 
     # Whether to do an inner or outer approximation
-    OUTER_APPROXIMATION = False
+    OUTER_APPROXIMATION = True
 
     # File to import the quadratic model from
-    F_NAME = "model11_quad_reform.json"
+    F_NAME = "toy.json"
 
     quadratic_lin_approx_no_surrogate(K, OUTER_APPROXIMATION, endpoints=True,
                                         f_name=F_NAME, verbose=True)

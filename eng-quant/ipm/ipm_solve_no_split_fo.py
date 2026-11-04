@@ -1,32 +1,32 @@
 from __future__ import annotations
 
-from ipm_newer.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.ipm_utility import ratio
 import numpy as np
+import scipy
 import time
 
-import scipy.linalg
-import scipy.sparse
+from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
+                    DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
+                    ExactStatevectorReadout, Refiner)
 
-# Solve a GasNet problem in a relaxed LP form.
-def ratio(x_vec, delta_x_vec):
-    rat = 1
-    for (x, delta_x) in zip(x_vec, delta_x_vec):
-        if delta_x < 0:
-            rat = min(- x / delta_x , rat)
-    return rat
-
-def ipm_solve_no_split(f_name: str = "linear_approx.json",
-                        xi: float = 1 - 5e-8, omega: float = 1e4,
-                        epsilon: float = 1e-8, zeta_n: float = 1e-2, zeta_r: float = .5,
-                        alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
-                        saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                        sparse: bool = True, ilu: bool = False,
-                        ilu_refinement: int = 3, ilu_drop_tol: float = 1e-4,
-                        verbose: bool = False):
+# Solve a GasNet problem in a relaxed LP form
+def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
+                            xi: float = 1 - 5e-8, omega: float = 1e4,
+                            epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .3,
+                            alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
+                            saund_tom: bool = False, saund_tom_factor: float = 1e-16,
+                            sparse: bool = False, qsim: bool = True,
+                            classic_ilu: bool = False, refinement_iters: int = 6, ilu_drop_tol: float = 1e-10,
+                            omega_bound: bool = True, sym_neighborhood: bool = True,
+                            infeas_factor: float = 1000.0, verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
+    start_time = time.time()
     A, b, G, h, u, c, const = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
+    run_time = time.time() - start_time
+    print(f"Time to load matrices: {run_time:.2f} seconds.")
 
     # Toy problem for testing, Dual solution is (0, 4, 0), obj = 8
     # A = np.array([[1, 0, 1], \
@@ -50,20 +50,23 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
     n = len(c) # Number of variables
     m = i_bar + e_bar + 2*n  # Number of constraints
     N = i_bar + 2*n # Number of terms in the complementarity
+    k = n + e_bar # Size of augmented system
+    lhs_size = 2*k # Size of system that is being solved in this method
 
     # A naive bound on omega
-    max_cost = np.dot(np.clip(c, 0, None), u)
-    omega = min(max_cost, omega)
+    max_cost = np.dot(np.clip(c, 1, None), u)
+    if omega_bound:
+        omega = min(max_cost, omega)
     if verbose:
         print(max_cost)
-        if omega == max_cost:
+        if omega_bound and omega == max_cost:
             print("omega was limited by the max cost")
 
     # problem-to-eq-ineq-matrix sanity check
     assert A.shape == (i_bar, n)
     assert G.shape == (e_bar, n)
     assert len(u) == n
-
+    
     # Run II-IPM
     x = np.zeros(n)
     w = np.zeros(e_bar)
@@ -131,10 +134,6 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
         else:
             M = (ATZ1_1Y @ A + np.diag(qz2_1 + lamz3_1))
 
-        r_aff = ATZ1_1Y @ b_Ax + qz2_1 * u_x - lamz3_1 * x \
-            - c - ATy - GTw - q + lam
-
-        # Predictor-step solve
         if sparse:
             if saund_tom:
                 K = scipy.sparse.bmat(
@@ -145,6 +144,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
                 K = scipy.sparse.bmat(
                     [[M, G.T], [G, None]], format="csc"
                 )
+            lhs = scipy.sparse.bmat([[K, None], [None, K]], format="csc")
         else:
             if saund_tom:
                 K = np.block([
@@ -156,25 +156,84 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
                     [M, G.T],
                     [G, np.zeros((e_bar, e_bar))],
                 ])
-        rhs_aff = np.concat((r_aff, h_Gx))
+            lhs = np.block([[K, np.zeros((k, k))], [np.zeros((k, k)), K]])
 
-        if ilu:
-            K_csc = scipy.sparse.csc_matrix(K)
-            K_ilu = scipy.sparse.linalg.spilu(
-                K_csc, drop_tol=ilu_drop_tol
+        r_aff = ATZ1_1Y @ b_Ax + qz2_1 * u_x - lamz3_1 * x \
+            - c - ATy - GTw - q + lam
+        rhs_aff = np.concat((r_aff, h_Gx))
+        r_cent = -(A.T @ z1_1 + z2_1 - z3_1)
+        rhs_cent = np.concat((r_cent, np.zeros(e_bar)))
+        rhs = np.concat((rhs_aff, rhs_cent))
+
+        if qsim:
+            if sparse:
+                print("Sparse and qsim are incompatable")
+                return
+
+            lhs_csc = scipy.sparse.csc_matrix(lhs)
+            lhs_ilu = scipy.sparse.linalg.spilu(
+                lhs_csc, drop_tol=ilu_drop_tol
             )
-            solution = K_ilu.solve(rhs_aff)
+
+            q_lhs = lhs_ilu.solve(lhs)
             if verbose:
-                residual = rhs_aff - K_csc @ solution
+                print(f"Cond no.: {np.linalg.cond(q_lhs)}")
+            qrhs = lhs_ilu.solve(rhs)
+
+            next_pow_2 = int(2 ** np.ceil(np.log2(lhs_size)))
+
+            diff = next_pow_2 - lhs_size
+
+            if diff > 0:
+                top_padded = np.hstack((q_lhs, np.zeros((lhs_size, diff))))
+                bottom_padded = np.hstack((np.zeros((diff, lhs_size)), np.eye(diff)))
+                q_lhs_padded = np.vstack((top_padded, bottom_padded))
+                qrhs_padded = np.concatenate((qrhs, np.ones(diff)))
+            else:
+                q_lhs_padded = q_lhs
+                qrhs_padded = qrhs
+
+            prob = LinearSystemProblem.from_matrix(q_lhs_padded, qrhs_padded)
+
+            solver = QuantumLinearSolver(
+                qlsa=BlockEncodingInversion(method="QSVT", target_error=0.1),
+                # qlsa=DalzellInversion(target_error=0.1),
+                state_prep=DefaultStatePrep(),
+                readout=ExactStatevectorReadout(),
+                backend=make_backend("qrisp"),
+                config=ExecutionConfig(success_mode="rus"),
+            )
+
+            if verbose:
+                print("Encoded problem")
+            
+            # result = solver.solve(prob)
+            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            solution = result.final_solution[:lhs_size]
+
+            residual = rhs - lhs_csc @ solution
+            residual_norm = np.linalg.norm(residual)
+            print(
+                f"Residual norm: {residual_norm}"
+            )
+        elif classic_ilu:
+            lhs_csc = scipy.sparse.csc_matrix(lhs)
+            lhs_ilu = scipy.sparse.linalg.spilu(
+                lhs_csc, drop_tol=ilu_drop_tol
+            )
+
+            solution = lhs_ilu.solve(rhs)
+            if verbose:
+                residual = rhs - lhs_csc @ solution
                 residual_norm = np.linalg.norm(residual)
                 print(
                     f"Before refinement residual norm: {residual_norm}"
                 )
-            for refine_step in range(ilu_refinement):
-                residual = rhs_aff - K_csc @ solution
-                correction = K_ilu.solve(residual)
+            for refine_step in range(refinement_iters):
+                residual = rhs - lhs_csc @ solution
+                correction = lhs_ilu.solve(residual)
                 candidate = solution + correction
-                candidate_residual = rhs_aff - K_csc @ candidate
+                candidate_residual = rhs - lhs_csc @ candidate
                 residual_norm = np.linalg.norm(residual)
                 candidate_norm = np.linalg.norm(candidate_residual)
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
@@ -186,21 +245,23 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
                         f"residual norm: {candidate_norm}"
                     )
         elif sparse:
-            solution = scipy.sparse.linalg.spsolve(K, rhs_aff)
+            solution = scipy.sparse.linalg.spsolve(lhs, rhs)
         else:
-            solution = np.linalg.solve(K, rhs_aff)
+            solution = np.linalg.solve(lhs, rhs)
 
         delta_x_aff = solution[:n]
-        delta_w_aff = solution[n:]
+        delta_w_aff = solution[n:k]
+        delta_x_cent = solution[k:n+k]
+        delta_w_cent = solution[n+k:]
 
-        # Recover the steps
+        # Compute mu from virtual affine step
         Adelta_x_aff = A @ delta_x_aff
 
         delta_z1_aff = b - Ax - z1 - Adelta_x_aff
         delta_z2_aff = u - x - z2 - delta_x_aff
         delta_z3_aff = x - z3 + delta_x_aff
 
-        delta_y_aff = -y * z1_1 * delta_z1_aff - y
+        delta_y_aff = -y * z1_1 * delta_z1_aff  - y
         delta_q_aff = -q * z2_1 * delta_z2_aff - q
         delta_lam_aff = c + ATy + GTw + q - lam \
             + A.T @ delta_y_aff + G.T @ delta_w_aff + delta_q_aff
@@ -223,7 +284,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
             print()
 
         alpha_max_aff = min(alpha_star_y_aff, alpha_star_q_aff, alpha_star_lam_aff,
-                        alpha_star_z1_aff, alpha_star_z2_aff, alpha_star_z3_aff, 1.0)
+                alpha_star_z1_aff, alpha_star_z2_aff, alpha_star_z3_aff, 1.0)
 
         y_pred = y + alpha_max_aff * delta_y_aff
         q_pred = q + alpha_max_aff * delta_q_aff
@@ -236,52 +297,18 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
 
         mu_corr = (r_c_pred / r_c)**3 * (r_c / N)
 
-        # Corrector step
-        ATZ1_1 = A.T @ z1_1
-        r_cent = -mu_corr * (ATZ1_1 + z2_1 - z3_1) + A.T @ (z1_1 * delta_y_aff * delta_z1_aff) \
-                + z2_1 * (delta_q_aff * delta_z2_aff) - z3_1 * (delta_lam_aff * delta_z3_aff)
-        rhs_cent = np.concat((r_cent, np.zeros(e_bar)))
+        # Corrector step recovery using mu_corr as scaling
+        delta_x_cent *= mu_corr
+        delta_w_cent *= mu_corr
 
-        if ilu:
-            solution = K_ilu.solve(rhs_cent)
-            if verbose:
-                residual = rhs_cent - K_csc @ solution
-                residual_norm = np.linalg.norm(residual)
-                print(
-                    f"Before refinement residual norm: {residual_norm}"
-                )
-            for refine_step in range(ilu_refinement):
-                residual = rhs_cent - K_csc @ solution
-                correction = K_ilu.solve(residual)
-                candidate = solution + correction
-                candidate_residual = rhs_cent - K_csc @ candidate
-                residual_norm = np.linalg.norm(residual)
-                candidate_norm = np.linalg.norm(candidate_residual)
-                if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
-                    break
-                solution = candidate
-                if verbose:
-                    print(
-                        f"Refinement iteration {refine_step + 1} "
-                        f"residual norm: {candidate_norm}"
-                    )
-        elif sparse:
-            solution = scipy.sparse.linalg.spsolve(K, rhs_cent)
-        else:
-            solution = np.linalg.solve(K, rhs_cent)
-
-        delta_x_cent = solution[:n]
-        delta_w_cent = solution[n:]
-
-        # Recover the steps
         Adelta_x_cent = A @ delta_x_cent
 
         delta_z1_cent = -Adelta_x_cent
         delta_z2_cent = -delta_x_cent
         delta_z3_cent = delta_x_cent
 
-        delta_y_cent = (-(delta_y_aff * delta_z1_aff) - y * delta_z1_cent + mu_corr) * z1_1
-        delta_q_cent = (-(delta_q_aff * delta_z2_aff)  - q * delta_z2_cent + mu_corr) * z2_1
+        delta_y_cent = (-y * delta_z1_cent + mu_corr) * z1_1
+        delta_q_cent = (-q * delta_z2_cent + mu_corr) * z2_1
         delta_lam_cent = A.T @ delta_y_cent + G.T @ delta_w_cent + delta_q_cent
 
         delta_x = delta_x_aff + delta_x_cent
@@ -336,15 +363,18 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
 
             is_neighbor = True
 
-            for comp in r_c_vec:
-                if comp < zeta_n * mu_alpha:
-                    is_neighbor = False
-                    test[0] += 1
-                    break
-                if comp > mu_alpha / zeta_n:
-                    is_neighbor = False
-                    test[6] += 1
-                    break
+            lower_bound = zeta_n * mu_alpha
+            violations = r_c_vec < lower_bound
+            if sym_neighborhood:
+                upper_bound = mu_alpha / zeta_n
+                violations |= r_c_vec > upper_bound
+            if np.any(violations):
+                is_neighbor = False
+                if verbose:
+                    if r_c_vec[np.argmax(violations)] < lower_bound:
+                        test[0] += 1
+                    else:
+                        test[6] += 1
 
             if not is_neighbor:
                 continue
@@ -419,9 +449,9 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
         z2 = z2_alpha
         z3 = z3_alpha
 
-        if max(abs(entry) for entry in np.concat(
-            (x, y, w, q, lam, z1, z2, z3)
-        )) > 2 * m * omega:
+        # If the problem is called infeasible, try raising infeas_factor.
+        if max(np.max(np.abs(values), initial=0.0) for values in
+               (x, y, w, q, lam, z1, z2, z3)) > infeas_factor * m * omega:
             print("The problem is infeasible.")
             break
 
@@ -430,6 +460,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
         Gx = G @ x
 
         if verbose:
+            r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
             print(f"Iteration {iteration}:")
             primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
             dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
@@ -453,6 +484,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
     run_time = time.time() - start_time
     primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
     dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
+    r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':25}{primal_obj:<15.8e}")
@@ -477,4 +509,4 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json",
     return -dual_obj, run_time, x, r_c
 
 if __name__ == "__main__":
-    ipm_solve_no_split(verbose=True)
+    ipm_solve_no_split_fo(verbose=True)

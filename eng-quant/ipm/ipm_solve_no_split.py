@@ -1,37 +1,32 @@
 from __future__ import annotations
 
-from ipm_newer.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.ipm_utility import ratio
 import numpy as np
+import scipy
 import time
 
-import scipy.linalg
-import scipy.sparse
-
-from qlsas import (LinearSystemProblem, BlockEncodingInversion, DefaultStatePrep,
-                    QuantumLinearSolver, ExecutionConfig, make_backend,
+from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
+                    DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
                     ExactStatevectorReadout, Refiner)
 
-# Solve a GasNet problem in a relaxed LP form.
-
-def ratio(x_vec, delta_x_vec):
-    rat = 1
-    for (x, delta_x) in zip(x_vec, delta_x_vec):
-        if delta_x < 0:
-            rat = min(- x / delta_x , rat)
-    return rat
-
+# Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
-                        xi: float = 1 - 5e-4, omega: float = 1e4,
-                        epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .5,
+                        xi: float = 1 - 5e-8, omega: float = 1e4,
+                        epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .3,
                         alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                         saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                        sparse: bool = True, qsim: bool = False,
-                        ilu: bool = False, ilu_refinement: int = 3, ilu_drop_tol: float = 1e-4,
-                        verbose: bool = False):
+                        sparse: bool = False, qsim: bool = True, classic_ilu: bool = False,
+                        refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
+                        omega_bound: bool = True, sym_neighborhood: bool = True,
+                        infeas_factor: float = 1000.0, verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
+    start_time = time.time()
     A, b, G, h, u, c, const = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
+    run_time = time.time() - start_time
+    print(f"Time to load matrices: {run_time:.2f} seconds.")
 
     # Toy problem for testing, Dual solution is (0, 4, 0), obj = 8
     # A = np.array([[1, 0, 1], \
@@ -55,20 +50,22 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
     n = len(c) # Number of variables
     m = i_bar + e_bar + 2*n  # Number of constraints
     N = i_bar + 2*n # Number of terms in the complementarity
+    k = n + e_bar # Size of augmented system
 
     # A naive bound on omega
-    max_cost = np.dot(np.clip(c, 0, None), u)
-    omega = min(max_cost, omega)
+    max_cost = np.dot(np.clip(c, 1, None), u)
+    if omega_bound:
+        omega = min(max_cost, omega)
     if verbose:
         print(max_cost)
-        if omega == max_cost:
+        if omega_bound and omega == max_cost:
             print("omega was limited by the max cost")
 
     # problem-to-eq-ineq-matrix sanity check
     assert A.shape == (i_bar, n)
     assert G.shape == (e_bar, n)
     assert len(u) == n
-
+    
     # Run II-IPM
     x = np.zeros(n)
     w = np.zeros(e_bar)
@@ -184,8 +181,11 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             if verbose:
                 print(f"Cond no.: {np.linalg.cond(qK)}")
             qrhs = K_ilu.solve(rhs)
-                
-            k = n + e_bar
+
+            # qK = K
+            # if verbose:
+            #     print(f"Cond no.: {np.linalg.cond(qK)}")
+            # qrhs = rhs
 
             next_pow_2 = int(2 ** np.ceil(np.log2(k)))
 
@@ -195,7 +195,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 top_padded = np.hstack((qK, np.zeros((k, diff))))
                 bottom_padded = np.hstack((np.zeros((diff, k)), np.eye(diff)))
                 qK_padded = np.vstack((top_padded, bottom_padded))
-                qrhs_padded = np.concatenate((qrhs, np.zeros(diff)))
+                qrhs_padded = np.concatenate((qrhs, np.ones(diff)))
             else:
                 qK_padded = qK
                 qrhs_padded = qrhs
@@ -203,7 +203,8 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             prob = LinearSystemProblem.from_matrix(qK_padded, qrhs_padded)
 
             solver = QuantumLinearSolver(
-                qlsa=BlockEncodingInversion(method="QSVT", precision=0.1),
+                qlsa=BlockEncodingInversion(method="QSVT", target_error=0.1),
+                # qlsa=DalzellInversion(target_error=0.1),
                 state_prep=DefaultStatePrep(),
                 readout=ExactStatevectorReadout(),
                 backend=make_backend("qrisp"),
@@ -212,13 +213,17 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
             if verbose:
                 print("Encoded problem")
+            
+            # result = solver.solve(prob)
+            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            solution = result.final_solution[:k]
 
-            result = solver.solve(prob)
-            solution = result.solution[:k]
-
-            print(solution)
-
-        if ilu:
+            residual = rhs - K_csc @ solution
+            residual_norm = np.linalg.norm(residual)
+            print(
+                f"Residual norm: {residual_norm}"
+            )
+        elif classic_ilu:
             K_csc = scipy.sparse.csc_matrix(K)
             K_ilu = scipy.sparse.linalg.spilu(
                 K_csc, drop_tol=ilu_drop_tol
@@ -231,7 +236,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 print(
                     f"Before refinement residual norm: {residual_norm}"
                 )
-            for refine_step in range(ilu_refinement):
+            for refine_step in range(refinement_iters):
                 residual = rhs - K_csc @ solution
                 correction = K_ilu.solve(residual)
                 candidate = solution + correction
@@ -250,6 +255,11 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             solution = scipy.sparse.linalg.spsolve(K, rhs)
         else:
             solution = np.linalg.solve(K, rhs)
+            residual = rhs - K @ solution
+            residual_norm = np.linalg.norm(residual)
+            print(
+                f"Residual norm: {residual_norm}"
+            )
 
         delta_x = solution[:n]
         delta_w = solution[n:]
@@ -316,15 +326,18 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
             is_neighbor = True
 
-            for comp in r_c_vec:
-                if comp < zeta_n * mu_alpha:
-                    is_neighbor = False
-                    test[0] += 1
-                    break
-                if comp > mu_alpha / zeta_n:
-                    is_neighbor = False
-                    test[6] += 1
-                    break
+            lower_bound = zeta_n * mu_alpha
+            violations = r_c_vec < lower_bound
+            if sym_neighborhood:
+                upper_bound = mu_alpha / zeta_n
+                violations |= r_c_vec > upper_bound
+            if np.any(violations):
+                is_neighbor = False
+                if verbose:
+                    if r_c_vec[np.argmax(violations)] < lower_bound:
+                        test[0] += 1
+                    else:
+                        test[6] += 1
 
             if not is_neighbor:
                 continue
@@ -399,9 +412,9 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
         z2 = z2_alpha
         z3 = z3_alpha
 
-        if max(abs(entry) for entry in np.concat(
-            (x, y, w, q, lam, z1, z2, z3)
-        )) > 2 * m * omega:
+        # If the problem is called infeasible, try raising infeas_factor.
+        if max(np.max(np.abs(values), initial=0.0) for values in
+               (x, y, w, q, lam, z1, z2, z3)) > infeas_factor * m * omega:
             print("The problem is infeasible.")
             break
 
@@ -410,6 +423,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
         Gx = G @ x
 
         if verbose:
+            r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
             print(f"Iteration {iteration}:")
             primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
             dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
@@ -433,6 +447,7 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
     run_time = time.time() - start_time
     primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
     dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
+    r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':25}{primal_obj:<15.8e}")

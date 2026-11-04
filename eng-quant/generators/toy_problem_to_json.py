@@ -13,6 +13,7 @@ from variable_definitions import (
 def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
                         gamma: float, lambd: float, eps: float, delta: float,
                         lp: float, lf: float, up: float, convex_relax: bool = True,
+                        fix_p: bool = False,
                         f_out: str = "toy.json", verbose: bool = False) -> None:
 
     d = lambd**2 + delta
@@ -37,17 +38,21 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
 
     variables = {}
 
-    for p in range(1, n + 1):
+    for p in range(1, nodes + 1):
         # Each copy has 3 production nodes, 1 transient node, and 1 customer
-        # But we only need a pressure on the transient
         var = setup_universal_var()
         var["lower"] = lp
         var["upper"] = up
-        variables["p[transient" + str(p) + "]"] = var
+        if p <= 3 * n:
+            variables["p[production" + str(p) + "]"] = var
+        elif p <= 4 * n:
+            variables["p[transient" + str(p - (3 * n)) + "]"] = var
+        else:
+            variables["p[customer" + str(p - (4 * n)) + "]"] = var
 
     # Specifically designing the edges
-    # Skip the edge associated with production-to-customer
     for f in range(1, n+1):
+
         edge_1 = setup_universal_var()
         edge_1["lower"] = lf
         edge_1["upper"] = lambd**2
@@ -82,6 +87,15 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
 
     # Constraints
     constraints = {}
+
+    # Fix the pressure of a production node
+    if fix_p:
+        fixed_pressure = setup_universal_lineq()
+        fixed_pressure["body"]["constant"] = up
+
+        fixed_pressure["body"]["linear"] = [{"var": "p[production1]", "coef": -1.0}]
+            
+        constraints["fp[production1]"] = fixed_pressure
 
     # Flow production constraints
     for fc in range(1, n+1):
@@ -121,23 +135,32 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
 
     for gpc in range(1, n+1):
         edge_1 = quad_setup_fun()
-        edge_1["body"]["constant"] = -up
-        edge_1["body"]["linear"] = [{"var": "p[transient" + str(gpc) + "]", "coef": 1.0}]
+        edge_1["body"]["linear"] = [{"var": "p[transient" + str(gpc) + "]", "coef": 1.0}, \
+                                    {"var": "p[production" + str(3*gpc - 2) + "]", "coef": -1.0}]
         edge_1["body"]["quadratic"] = [{"var1": "f[production" + str(3*gpc - 2) + "_transient" + str(gpc) + "]", \
                                         "var2": "f[production" + str(3*gpc - 2) + "_transient" + str(gpc) + "]", \
                                         "coef": gamma}]
         constraints["gpc[production" + str(3*gpc - 2) + "_transient" + str(gpc) + "]"] = edge_1
         
         edge_2 = quad_setup_fun()
-        edge_2["body"]["constant"] = -up
-        edge_2["body"]["linear"] = [{"var": "p[transient" + str(gpc) + "]", "coef": 1.0}]
+        edge_2["body"]["linear"] = [{"var": "p[transient" + str(gpc) + "]", "coef": 1.0}, \
+                                    {"var": "p[production" + str(3*gpc - 1) + "]", "coef": -1.0}]
         edge_2["body"]["quadratic"] = [{"var1": "f[production" + str(3*gpc - 1) + "_transient" + str(gpc) + "]", \
                                         "var2": "f[production" + str(3*gpc - 1) + "_transient" + str(gpc) + "]", \
                                         "coef": gamma}]
         constraints["gpc[production" + str(3*gpc - 1) + "_transient" + str(gpc) + "]"] = edge_2
 
+        edge_3 = quad_setup_fun()
+        edge_3["body"]["linear"] = [{"var": "p[customer" + str(gpc) + "]", "coef": 1.0}, \
+                                    {"var": "p[production" + str(3*gpc) + "]", "coef": -1.0}]
+        edge_3["body"]["quadratic"] = [{"var1": "f[production" + str(3*gpc) + "_customer" + str(gpc) + "]", \
+                                        "var2": "f[production" + str(3*gpc) + "_customer" + str(gpc) + "]", \
+                                        "coef": gamma}]
+        constraints["gpc[production" + str(3*gpc) + "_customer" + str(gpc) + "]"] = edge_3
+
         edge_4 = quad_setup_fun()
-        edge_4["body"]["linear"] = [{"var": "p[transient" + str(gpc) + "]", "coef": -1.0}]
+        edge_4["body"]["linear"] = [{"var": "p[customer" + str(gpc) + "]", "coef": 1.0}, \
+                                    {"var": "p[transient" + str(gpc) + "]", "coef": -1.0}]
         edge_4["body"]["quadratic"] = [{"var1": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "var2": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "coef": gamma}]
@@ -183,7 +206,7 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
 
 if __name__ == "__main__":
     # Number of copies of the network in the system
-    N=100
+    N=1000
 
     # Whether the production and flow variables have upper bounds
     F_UPPER_BOUNDS=True

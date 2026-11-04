@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-from ipm_newer.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.ipm_utility import ratio
 import numpy as np
+import scipy
 import time
 
-import scipy.linalg
-import scipy.sparse
-
-from qlsas import (LinearSystemProblem, BlockEncodingInversion, DefaultStatePrep,
-                    QuantumLinearSolver, ExecutionConfig, make_backend,
+from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
+                    DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
                     ExactStatevectorReadout, Refiner)
 
 # Solve a GasNet problem in a relaxed LP form.
-
-def ratio(x_vec, delta_x_vec):
-    rat = 1
-    for (x, delta_x) in zip(x_vec, delta_x_vec):
-        if delta_x < 0:
-            rat = min(- x / delta_x , rat)
-    return rat
-
 def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 xi: float = 1 - 5e-4, omega: float = 1e4,
                 w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .9,
@@ -27,13 +18,17 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .8,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                 saund_tom: bool = False, saund_tom_factor: float = 0,
-                sparse: bool = False, qsim: bool = False,
-                ilu: bool = False, ilu_refinement: int = 3, ilu_drop_tol: float = 1e-8,
-                verbose: bool = False):
+                sparse: bool = True, qsim: bool = False, classic_ilu: bool = False, 
+                refinement_iters: int = 3, ilu_drop_tol: float = 1e-8,
+                omega_bound: bool = True, sym_neighborhood: bool = True,
+                infeas_factor: float = 2.0, verbose: bool = False):
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
+    start_time = time.time()
     A, b, G, h, u, c, const = problem_to_eq_ineq_matrices(f_name=f_name, sparse=sparse, verbose=False)
+    run_time = time.time() - start_time
+    print(f"Time to load matrices: {run_time:.2f} seconds.")
 
     # Toy problem for testing, Dual solution is (0, 4, 0), obj = 8
     # A = np.array([[1, 0, 1], \
@@ -58,11 +53,12 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
     m = i_bar + 2*e_bar + 2*n  # Number of constraints
 
     # A naive bound on omega
-    max_cost = np.dot(np.clip(c, 0, None), u)
-    omega = min(max_cost, omega)
+    max_cost = np.dot(np.clip(c, 1, None), u)
+    if omega_bound:
+        omega = min(max_cost, omega)
     if verbose:
         print(max_cost)
-        if omega == max_cost:
+        if omega_bound and omega == max_cost:
             print("omega was limited by the max cost")
 
     # problem-to-eq-ineq-matrix sanity check
@@ -174,7 +170,6 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
         r = r_aff - mu * r_cent
 
-
         if qsim:
             if sparse:
                 print("Sparse and qsim are incompatable")
@@ -198,7 +193,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 top_padded = np.hstack((qM, np.zeros((n, diff))))
                 bottom_padded = np.hstack((np.zeros((diff, n)), np.eye(diff)))
                 qM_padded = np.vstack((top_padded, bottom_padded))
-                qr_padded = np.concatenate((qr, np.zeros(diff)))
+                qr_padded = np.concatenate((qr, np.ones(diff)))
             else:
                 qM_padded = qM
                 qr_padded = qr
@@ -206,7 +201,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
             prob = LinearSystemProblem.from_matrix(qM_padded, qr_padded)
 
             solver = QuantumLinearSolver(
-                qlsa=BlockEncodingInversion(method="QSVT", precision=0.1),
+                qlsa=BlockEncodingInversion(method="QSVT", target_error=0.1),
                 state_prep=DefaultStatePrep(),
                 readout=ExactStatevectorReadout(),
                 backend=make_backend("qrisp"),
@@ -216,11 +211,16 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
             if verbose:
                 print("Encoded problem")
 
-            result = solver.solve(prob)
-            solution = result.solution[:n]
-            print(solution)
+            # result = solver.solve(prob)
+            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            delta_x = result.final_solution[:n]
 
-        if ilu:
+            residual = r - M_csc @ delta_x
+            residual_norm = np.linalg.norm(residual)
+            print(
+                f"Residual norm: {residual_norm}"
+            )
+        elif classic_ilu:
             M_csc = scipy.sparse.csc_matrix(M)
             M_ilu = scipy.sparse.linalg.spilu(
                 M_csc, drop_tol=ilu_drop_tol
@@ -232,7 +232,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 print(
                     f"Before refinement residual norm: {residual_norm}"
                 )
-            for refine_step in range(ilu_refinement):
+            for refine_step in range(refinement_iters):
                 residual = r - M_csc @ delta_x
                 correction = M_ilu.solve(residual)
                 candidate = delta_x + correction
@@ -335,15 +335,18 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
             is_neighbor = True
 
-            for comp in r_c_vec:
-                if comp < zeta_n * mu_alpha:
-                    is_neighbor = False
-                    test[0] += 1
-                    break
-                if comp > mu_alpha / zeta_n:
-                    is_neighbor = False
-                    test[6] += 1
-                    break
+            lower_bound = zeta_n * mu_alpha
+            violations = r_c_vec < lower_bound
+            if sym_neighborhood:
+                upper_bound = mu_alpha / zeta_n
+                violations |= r_c_vec > upper_bound
+            if np.any(violations):
+                is_neighbor = False
+                if verbose:
+                    if r_c_vec[np.argmax(violations)] < lower_bound:
+                        test[0] += 1
+                    else:
+                        test[6] += 1
 
             if not is_neighbor:
                 continue
@@ -442,9 +445,9 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         # print(f"w1 after update: {w1}")
         # print(f"w2 after update: {w2}")
 
-        if max(abs(entry) for entry in np.concat(
-            (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)
-        )) > 2 * m * omega:
+        # If the problem is called infeasible, try raising infeas_factor.
+        if max(np.max(np.abs(values), initial=0.0) for values in
+               (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)) > infeas_factor * m * omega:
             print("The problem is infeasible.")
             break
 
@@ -453,6 +456,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         Gx = G @ x
 
         if verbose:
+            r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
+                + np.dot(q, z4) + np.dot(lam, z5)
             print(f"Iteration {iteration}:")
             primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
             dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
@@ -477,6 +482,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
     run_time = time.time() - start_time
     primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
     dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
+    r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
+        + np.dot(q, z4) + np.dot(lam, z5)
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':25}{primal_obj:<15.8e}")
