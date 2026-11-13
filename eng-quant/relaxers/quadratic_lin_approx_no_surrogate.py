@@ -134,7 +134,7 @@ if __name__ == "__main__":
     OUTER_APPROXIMATION = True
 
     # File to import the quadratic model from
-    F_NAME = "toy.json"
+    F_NAME = "GasLib-40_reform.json"
 
     quadratic_lin_approx_no_surrogate(K, OUTER_APPROXIMATION, endpoints=True,
                                         f_name=F_NAME, verbose=True)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-10"
+
 from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
 from ipm.ipm_utility import ratio
 import numpy as np
@@ -18,8 +21,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .8,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                 saund_tom: bool = False, saund_tom_factor: float = 0,
-                sparse: bool = True, qsim: bool = False, classic_ilu: bool = False, 
-                refinement_iters: int = 3, ilu_drop_tol: float = 1e-8,
+                sparse: bool = False, qsim: bool = True, classic_ilu: bool = False, 
+                refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
                 omega_bound: bool = True, sym_neighborhood: bool = True,
                 infeas_factor: float = 2.0, verbose: bool = False):
     np.set_printoptions(linewidth=200)
@@ -180,23 +183,32 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 M_csc, drop_tol=ilu_drop_tol
             )
 
-            qM = M_ilu.solve(M)
-            if verbose:
-                print(f"Cond no.: {np.linalg.cond(qM)}")
-            qr = M_ilu.solve(r)
+            M_pre = M_ilu.solve(M)
+            r_pre = M_ilu.solve(r)
 
             next_pow_2 = int(2 ** np.ceil(np.log2(n)))
 
             diff = next_pow_2 - n
 
             if diff > 0:
-                top_padded = np.hstack((qM, np.zeros((n, diff))))
-                bottom_padded = np.hstack((np.zeros((diff, n)), np.eye(diff)))
-                qM_padded = np.vstack((top_padded, bottom_padded))
-                qr_padded = np.concatenate((qr, np.ones(diff)))
+                M_pre_padded = np.block([
+                    [M_pre, np.zeros((n, diff))],
+                    [np.zeros((diff, n)), np.eye(diff)]
+                ])
+                r_pre_padded = np.concatenate((r_pre, np.zeros(diff)))
             else:
-                qM_padded = qM
-                qr_padded = qr
+                M_pre_padded = M_pre
+                r_pre_padded = r_pre
+
+            qM_padded = np.block([
+                [np.zeros((next_pow_2, next_pow_2)), M_pre_padded],
+                [M_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
+            ])
+            qr_padded = np.concatenate((r_pre_padded, np.zeros(next_pow_2)))
+            if verbose:
+                print(f"Cond no before precond: {np.linalg.cond(M)}")
+                print(f"Cond no before embedding: {np.linalg.cond(M_pre)}")
+                print(f"Cond no after embedding: {np.linalg.cond(qM_padded)}")
 
             prob = LinearSystemProblem.from_matrix(qM_padded, qr_padded)
 
@@ -213,7 +225,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
             # result = solver.solve(prob)
             result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
-            delta_x = result.final_solution[:n]
+            delta_x = result.final_solution[next_pow_2:next_pow_2 + n]
 
             residual = r - M_csc @ delta_x
             residual_norm = np.linalg.norm(residual)

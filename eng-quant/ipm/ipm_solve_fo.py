@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-10"
+
 from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
 from ipm.ipm_utility import ratio
 import numpy as np
@@ -176,25 +179,34 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 lhs_csc, drop_tol=ilu_drop_tol
             )
 
-            q_lhs = lhs_ilu.solve(lhs)
-            if verbose:
-                print(f"Cond no.: {np.linalg.cond(q_lhs)}")
-            qrhs = lhs_ilu.solve(rhs)
+            lhs_pre = lhs_ilu.solve(lhs)
+            rhs_pre = lhs_ilu.solve(rhs)
 
             next_pow_2 = int(2 ** np.ceil(np.log2(lhs_size)))
 
             diff = next_pow_2 - lhs_size
 
             if diff > 0:
-                top_padded = np.hstack((q_lhs, np.zeros((lhs_size, diff))))
-                bottom_padded = np.hstack((np.zeros((diff, lhs_size)), np.eye(diff)))
-                q_lhs_padded = np.vstack((top_padded, bottom_padded))
-                qrhs_padded = np.concatenate((qrhs, np.ones(diff)))
+                lhs_pre_padded = np.block([
+                    [lhs_pre, np.zeros((lhs_size, diff))],
+                    [np.zeros((diff, lhs_size)), np.eye(diff)]
+                ])
+                rhs_pre_padded = np.concatenate((rhs_pre, np.zeros(diff)))
             else:
-                q_lhs_padded = q_lhs
-                qrhs_padded = qrhs
+                lhs_pre_padded = lhs_pre
+                rhs_pre_padded = rhs_pre
 
-            prob = LinearSystemProblem.from_matrix(q_lhs_padded, qrhs_padded)
+            qlhs_padded = np.block([
+                [np.zeros((next_pow_2, next_pow_2)), lhs_pre_padded],
+                [lhs_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
+            ])
+            qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
+            if verbose:
+                print(f"Cond no before precond: {np.linalg.cond(lhs)}")
+                print(f"Cond no before embedding: {np.linalg.cond(lhs_pre)}")
+                print(f"Cond no after embedding: {np.linalg.cond(qlhs_padded)}")
+
+            prob = LinearSystemProblem.from_matrix(qlhs_padded, qrhs_padded)
 
             solver = QuantumLinearSolver(
                 qlsa=BlockEncodingInversion(method="QSVT", target_error=0.1),
@@ -209,7 +221,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
 
             # result = solver.solve(prob)
             result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
-            solution = result.final_solution[:lhs_size]
+            solution = result.final_solution[next_pow_2:next_pow_2 + lhs_size]
 
             residual = rhs - lhs_csc @ solution
             residual_norm = np.linalg.norm(residual)

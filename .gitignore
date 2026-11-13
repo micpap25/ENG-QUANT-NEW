@@ -7,4 +7,6 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 *.log
+*.png
+*.csv
 MODEL_JSON_FORMAT.md
