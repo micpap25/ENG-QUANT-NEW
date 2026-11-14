@@ -7,7 +7,7 @@ from qrisp import QuantumFloat
 from qrisp.operators import QubitOperator
 
 from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import ratio
+from ipm.ipm_utility import draw_lcu_block_encoding_schematic, ratio
 import numpy as np
 import scipy
 import time
@@ -17,6 +17,7 @@ from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion
                     ExactStatevectorReadout, Refiner, ResourceEstimator)
 from qlsas.ft import PhysicalResourceEstimator, preset
 
+
 # Issues to submit for FT-QLSA (ready to go!)
 # TODO: Huge number of qubits for large cond no problem (not what we expect)
 # TODO: p_succ issues RuntimeWarning
@@ -25,13 +26,13 @@ from qlsas.ft import PhysicalResourceEstimator, preset
 # TODO: Error w/o Hermitian
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
-                        xi: float = 1 - 5e-8, omega: float = 1e6, epsilon: float = 1e-8,
+                        xi: float = 1 - 5e-8, omega: float = 1e4, epsilon: float = 1e-8,
                         infeas_factor: float = 1000.0, sym_neighborhood: bool = True,
                         zeta_n: float = 5e-3, zeta_r: float = .3,
                         alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                         saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                        symmetric_scaling: bool = True, omega_bound: bool = False, 
-                        sparse: bool = True, classic_ilu: bool = False, qsim: bool = False, 
+                        symmetric_scaling: bool = True, omega_bound: bool = True, 
+                        sparse: bool = False, classic_ilu: bool = False, qsim: bool = True, 
                         refinement_iters: int = 10, ilu_drop_tol: float = 1e-4,
                         hermitian_embedding: bool = False,
                         verbose: bool = False):
@@ -245,11 +246,11 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 if hermitian_embedding:
                     print(f"Cond no after embedding: {np.linalg.cond(qK_padded)}")
 
-                np.savetxt(f"input_lhs_{iteration}.csv", K, delimiter=",")
-                np.savetxt(f"input_rhs_{iteration}.csv", rhs, delimiter=",")
+                # np.savetxt(f"input_lhs_{iteration}.csv", K, delimiter=",")
+                # np.savetxt(f"input_rhs_{iteration}.csv", rhs, delimiter=",")
 
-                np.savetxt(f"output_lhs_{iteration}.csv", qK_padded, delimiter=",")
-                np.savetxt(f"output_rhs_{iteration}.csv", qrhs_padded, delimiter=",")
+                # np.savetxt(f"output_lhs_{iteration}.csv", qK_padded, delimiter=",")
+                # np.savetxt(f"output_rhs_{iteration}.csv", qrhs_padded, delimiter=",")
 
             prob = LinearSystemProblem.from_matrix(qK_padded, qrhs_padded)
 
@@ -281,9 +282,13 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
                 # draw_register = QuantumFloat(prob.n)
                 # block_encoding.apply(draw_register)
-                # draw_register.qs.compile().to_qiskit().draw(
+                # compiled_block_encoding = draw_register.qs.compile()
+                # import matplotlib.pyplot as plt
+
+                # circuit_figure = compiled_block_encoding.to_qiskit().draw(
                 #     "mpl", filename=f"block-encoding-iteration-{iteration}.png"
                 # )
+                # plt.close(circuit_figure)
 
                 be = block_encoding.resources(QuantumFloat(prob.n))
                 print("Matrix block encoding (one application):")
@@ -291,10 +296,17 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 print(f"Depth: {be['depth']}")
                 print(f"Gate counts: {be['gate counts']}")
 
-                lcu_unitaries, _ = QubitOperator.from_matrix(
+                qubit_operator = QubitOperator.from_matrix(
                     prob.A, reverse_endianness=True
-                ).unitaries()
+                )
+                lcu_unitaries, _ = qubit_operator.unitaries()
                 print(f"LCU terms: {len(lcu_unitaries)}")
+                # draw_lcu_block_encoding_schematic(
+                #     qubit_operator,
+                #     block_encoding.alpha,
+                #     prob.n,
+                #     f"block-encoding-abstract-iteration-{iteration}.png",
+                # )
 
                 # phys_est = PhysicalResourceEstimator(preset("superconducting_1e-3")).estimate(alg, prob, state_prep)
                 # print(phys_est.summary())
