@@ -9,16 +9,18 @@ import numpy as np
 import scipy
 import time
 
+from pymatting import ichol
+
 from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
                     DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
                     ExactStatevectorReadout, Refiner)
 
 # Solve a GasNet problem in a relaxed LP form.
 def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
-                xi: float = 1 - 5e-4, omega: float = 1e4,
-                w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .9,
+                xi: float = 1 - 5e-4, omega: float = 1e1,
+                w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .5,
                 tau_init: float = 1e-4, scaling_tau: bool = False,
-                epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .8,
+                epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .3,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                 saund_tom: bool = False, saund_tom_factor: float = 0,
                 sparse: bool = False, qsim: bool = True, classic_ilu: bool = False, 
@@ -179,12 +181,14 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 return
 
             M_csc = scipy.sparse.csc_matrix(M)
-            M_ilu = scipy.sparse.linalg.spilu(
-                M_csc, drop_tol=ilu_drop_tol
+            M_ichol = ichol(
+                M_csc, discard_threshold=ilu_drop_tol
             )
 
-            M_pre = M_ilu.solve(M)
-            r_pre = M_ilu.solve(r)
+            M_pre = np.column_stack(
+                [M_ichol(M[:, column]) for column in range(M.shape[1])]
+            )
+            r_pre = M_ichol(r)
 
             next_pow_2 = int(2 ** np.ceil(np.log2(n)))
 
@@ -234,10 +238,10 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
             )
         elif classic_ilu:
             M_csc = scipy.sparse.csc_matrix(M)
-            M_ilu = scipy.sparse.linalg.spilu(
-                M_csc, drop_tol=ilu_drop_tol
+            M_ichol = ichol(
+                M_csc, discard_threshold=ilu_drop_tol
             )
-            delta_x = M_ilu.solve(r)
+            delta_x = M_ichol(r)
             if verbose:
                 residual = r - M_csc @ delta_x
                 residual_norm = np.linalg.norm(residual)
@@ -246,7 +250,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 )
             for refine_step in range(refinement_iters):
                 residual = r - M_csc @ delta_x
-                correction = M_ilu.solve(residual)
+                correction = M_ichol(residual)
                 candidate = delta_x + correction
                 candidate_residual = r - M_csc @ candidate
                 residual_norm = np.linalg.norm(residual)

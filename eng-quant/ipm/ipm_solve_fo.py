@@ -9,6 +9,8 @@ import numpy as np
 import scipy
 import time
 
+from pymatting import ichol
+
 from qlsas import (LinearSystemProblem, BlockEncodingInversion, DefaultStatePrep,
                     QuantumLinearSolver, ExecutionConfig, make_backend,
                     ExactStatevectorReadout, Refiner)
@@ -175,12 +177,14 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 return
 
             lhs_csc = scipy.sparse.csc_matrix(lhs)
-            lhs_ilu = scipy.sparse.linalg.spilu(
-                lhs_csc, drop_tol=ilu_drop_tol
+            lhs_ichol = ichol(
+                lhs_csc, discard_threshold=ilu_drop_tol
             )
 
-            lhs_pre = lhs_ilu.solve(lhs)
-            rhs_pre = lhs_ilu.solve(rhs)
+            lhs_pre = np.column_stack(
+                [lhs_ichol(lhs[:, column]) for column in range(lhs.shape[1])]
+            )
+            rhs_pre = lhs_ichol(rhs)
 
             next_pow_2 = int(2 ** np.ceil(np.log2(lhs_size)))
 
@@ -230,11 +234,11 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
             )
         elif classic_ilu:
             lhs_csc = scipy.sparse.csc_matrix(lhs)
-            lhs_ilu = scipy.sparse.linalg.spilu(
-                lhs_csc, drop_tol=ilu_drop_tol
+            lhs_ichol = ichol(
+                lhs_csc, discard_threshold=ilu_drop_tol
             )
 
-            solution = lhs_ilu.solve(rhs)
+            solution = lhs_ichol(rhs)
             if verbose:
                 residual = rhs - lhs_csc @ solution
                 residual_norm = np.linalg.norm(residual)
@@ -243,7 +247,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 )
             for refine_step in range(refinement_iters):
                 residual = rhs - lhs_csc @ solution
-                correction = lhs_ilu.solve(residual)
+                correction = lhs_ichol(residual)
                 candidate = solution + correction
                 candidate_residual = rhs - lhs_csc @ candidate
                 residual_norm = np.linalg.norm(residual)

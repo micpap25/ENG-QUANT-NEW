@@ -6,6 +6,8 @@ import numpy as np
 import scipy
 import time
 
+from pymatting import ichol
+
 # Solve a GasNet problem in a relaxed LP form.
 def ipm_solve_so(f_name: str = "linear_approx.json",
                 xi: float = 1 - 5e-8, omega: float = 1e4,
@@ -156,10 +158,10 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
 
         if classic_ilu:
             M_csc = scipy.sparse.csc_matrix(M)
-            M_ilu = scipy.sparse.linalg.spilu(
-                M_csc, drop_tol=ilu_drop_tol
+            M_ichol = ichol(
+                M_csc, discard_threshold=ilu_drop_tol
             )
-            delta_x_aff = M_ilu.solve(r_aff)
+            delta_x_aff = M_ichol(r_aff)
             if verbose:
                 residual = r_aff - M_csc @ delta_x_aff
                 residual_norm = np.linalg.norm(residual)
@@ -168,7 +170,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 )
             for refine_step in range(refinement_iters):
                 residual = r_aff - M_csc @ delta_x_aff
-                correction = M_ilu.solve(residual)
+                correction = M_ichol(residual)
                 candidate = delta_x_aff + correction
                 candidate_residual = r_aff - M_csc @ candidate
                 residual_norm = np.linalg.norm(residual)
@@ -259,7 +261,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 + z4_1 * (delta_q_aff * delta_z4_aff) - z5_1 * (delta_lam_aff * delta_z5_aff)
 
         if classic_ilu:
-            delta_x_cent = M_ilu.solve(r_cent)
+            delta_x_cent = M_ichol(r_cent)
             if verbose:
                 residual = r_cent - M_csc @ delta_x_cent
                 residual_norm = np.linalg.norm(residual)
@@ -268,7 +270,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 )
             for refine_step in range(refinement_iters):
                 residual = r_cent - M_csc @ delta_x_cent
-                correction = M_ilu.solve(residual)
+                correction = M_ichol(residual)
                 candidate = delta_x_cent + correction
                 candidate_residual = r_cent - M_csc @ candidate
                 residual_norm = np.linalg.norm(residual)
