@@ -1,29 +1,43 @@
 from __future__ import annotations
 
 import os
-os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-10"
-
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import ratio
-import numpy as np
-import scipy
 import time
 
-from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
-                    DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
-                    ExactStatevectorReadout, Refiner)
+import numpy as np
+import scipy
+
+os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-15"
+
+from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.ipm_utility import draw_qlsa, phys_est_qlsa, print_qlsa_stats, ratio
+
+from qlsas import (
+    BlockEncodingInversion,
+    DalzellInversion,
+    ExecutionConfig,
+    ExactStatevectorReadout,
+    HadamardSignReadout,
+    LinearSystemProblem,
+    MatrixEncoding,
+    QuantumLinearSolver,
+    Refiner,
+    amplitude_encoding,
+    make_backend,
+)
 
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
-                            xi: float = 1 - 5e-8, omega: float = 1e4,
-                            epsilon: float = 1e-8, zeta_n: float = 1e-3, zeta_r: float = .3,
+                            xi: float = 1 - 5e-8, omega: float = 1e4, epsilon: float = 1e-8,
+                            infeas_factor: float = 1000.0, sym_neighborhood: bool = True,
+                            zeta_n: float = 1e-2, zeta_r: float = .3,
                             alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                             saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                            sparse: bool = False, qsim: bool = True,
-                            classic_ilu: bool = False, refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
-                            omega_bound: bool = True, sym_neighborhood: bool = True,
-                            infeas_factor: float = 1000.0, verbose: bool = False):
-    np.set_printoptions(linewidth=200)
+                            symmetric_scaling: bool = True, omega_bound: bool = True,
+                            sparse: bool = False, classic_ilu: bool = False, qsim: bool = True,
+                            refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
+                            ilu_rtol: float = 1e-6, hermitian_embedding: bool = False,
+                            verbose: bool = False):
+    np.set_printoptions(linewidth=400)
 
     # Gurobi output pops up here because of license file
     start_time = time.time()
@@ -168,9 +182,24 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
         rhs_cent = np.concat((r_cent, np.zeros(e_bar)))
         rhs = np.concat((rhs_aff, rhs_cent))
 
+        symmetric_scale = np.ones(lhs.shape[0])
+        if symmetric_scaling:
+            if sparse:
+                row_max = np.asarray(np.abs(lhs).max(axis=1).toarray()).ravel()
+            else:
+                row_max = np.max(np.abs(lhs), axis=1)
+            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+
+            if sparse:
+                D = scipy.sparse.diags(symmetric_scale, format="csc")
+                lhs = D @ lhs @ D
+            else:
+                lhs = symmetric_scale[:, None] * lhs * symmetric_scale[None, :]
+            rhs = symmetric_scale * rhs
+
         if qsim:
             if sparse:
-                print("Sparse and qsim are incompatable")
+                print("Sparse and qsim are incompatible")
                 return
 
             lhs_csc = scipy.sparse.csc_matrix(lhs)
@@ -195,39 +224,67 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
                 lhs_pre_padded = lhs_pre
                 rhs_pre_padded = rhs_pre
 
-            qlhs_padded = np.block([
-                [np.zeros((next_pow_2, next_pow_2)), lhs_pre_padded],
-                [lhs_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
-            ])
-            qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
+            if hermitian_embedding:
+                qlhs_padded = np.block([
+                    [np.zeros((next_pow_2, next_pow_2)), lhs_pre_padded],
+                    [lhs_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
+                ])
+                qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
+            else:
+                qlhs_padded = lhs_pre_padded
+                qrhs_padded = rhs_pre_padded
+
             if verbose:
                 print(f"Cond no before precond: {np.linalg.cond(lhs)}")
                 print(f"Cond no before embedding: {np.linalg.cond(lhs_pre)}")
-                print(f"Cond no after embedding: {np.linalg.cond(qlhs_padded)}")
+                if hermitian_embedding:
+                    print(f"Cond no after embedding: {np.linalg.cond(qlhs_padded)}")
+
+                np.savetxt(f"drawings/input_lhs_{iteration}.csv", lhs, delimiter=",")
+                np.savetxt(f"drawings/input_rhs_{iteration}.csv", rhs, delimiter=",")
+
+                np.savetxt(f"drawings/output_lhs_{iteration}.csv", qlhs_padded, delimiter=",")
+                np.savetxt(f"drawings/output_rhs_{iteration}.csv", qrhs_padded, delimiter=",")
+
 
             prob = LinearSystemProblem.from_matrix(qlhs_padded, qrhs_padded)
 
+            alg = BlockEncodingInversion(method="QSVT", target_error=.01)
+            # alg = DalzellInversion(target_error=0.01)
+            enc = MatrixEncoding.from_array(qlhs_padded)
+
+            # if verbose:
+            #     print_qlsa_stats(alg, enc, prob)
+            #     draw_qlsa(alg, enc, prob, iteration)
+            #     phys_est_qlsa(alg, enc, prob)
+
             solver = QuantumLinearSolver(
-                qlsa=BlockEncodingInversion(method="QSVT", target_error=0.01),
-                # qlsa=DalzellInversion(target_error=0.1),
-                state_prep=DefaultStatePrep(),
+                qlsa=alg,
+                encoding=enc,
+                state_prep=amplitude_encoding,
                 readout=ExactStatevectorReadout(),
+                # readout=HadamardSignReadout(),
                 backend=make_backend("qrisp"),
-                config=ExecutionConfig(success_mode="rus"),
+                config=ExecutionConfig(shots=0),
             )
 
             if verbose:
                 print("Encoded problem")
             
             # result = solver.solve(prob)
-            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
-            solution = result.final_solution[next_pow_2:next_pow_2 + lhs_size]
+            result = Refiner(solver=solver, max_iters=refinement_iters,
+                             rtol=ilu_rtol).refine(prob)
+            if hermitian_embedding:
+                solution = result.final_solution[next_pow_2:next_pow_2 + lhs_size]
+            else:
+                solution = result.final_solution[:lhs_size]
 
             residual = rhs - lhs_csc @ solution
             residual_norm = np.linalg.norm(residual)
-            print(
-                f"Residual norm: {residual_norm}"
-            )
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
         elif classic_ilu:
             lhs_csc = scipy.sparse.csc_matrix(lhs)
             lhs_ilu = scipy.sparse.linalg.spilu(
@@ -260,7 +317,14 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
             solution = scipy.sparse.linalg.spsolve(lhs, rhs)
         else:
             solution = np.linalg.solve(lhs, rhs)
+            residual = rhs - lhs @ solution
+            residual_norm = np.linalg.norm(residual)
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
 
+        solution = symmetric_scale * solution
         delta_x_aff = solution[:n]
         delta_w_aff = solution[n:k]
         delta_x_cent = solution[k:n+k]

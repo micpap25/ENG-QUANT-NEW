@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+import time
+
 from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
 from ipm.ipm_utility import ratio
 import numpy as np
 import scipy
-import time
 
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
-                            xi: float = 1 - 5e-8, omega: float = 1e6,
-                            epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .5,
+                            xi: float = 1 - 5e-8, omega: float = 1e6, epsilon: float = 1e-8,
+                            infeas_factor: float = 1e5, sym_neighborhood: bool = True,
+                            zeta_n: float = 5e-3, zeta_r: float = .5,
                             alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                             saund_tom: bool = False, saund_tom_factor: float = 1e-16,
+                            symmetric_scaling: bool = True, omega_bound: bool = True,
                             sparse: bool = True, classic_ilu: bool = False,
                             refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
-                            omega_bound: bool = True, sym_neighborhood: bool = True,
-                            infeas_factor: float = 1e5, verbose: bool = False):
-    np.set_printoptions(linewidth=200)
+                            verbose: bool = False):
+    np.set_printoptions(linewidth=400)
 
     # Gurobi output pops up here because of license file
     start_time = time.time()
@@ -150,10 +152,25 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
                     [G, np.zeros((e_bar, e_bar))],
                 ])
 
+        symmetric_scale = np.ones(K.shape[0])
+        if symmetric_scaling:
+            if sparse:
+                row_max = np.asarray(np.abs(K).max(axis=1).toarray()).ravel()
+            else:
+                row_max = np.max(np.abs(K), axis=1)
+            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+
+            if sparse:
+                D = scipy.sparse.diags(symmetric_scale, format="csc")
+                K = D @ K @ D
+            else:
+                K = symmetric_scale[:, None] * K * symmetric_scale[None, :]
+
         # Predictor-step solve
         r_aff = ATZ1_1Y @ b_Ax + qz2_1 * u_x - lamz3_1 * x \
             - c - ATy - GTw - q + lam
         rhs_aff = np.concat((r_aff, h_Gx))
+        rhs_aff = symmetric_scale * rhs_aff
         if classic_ilu:
             K_csc = scipy.sparse.csc_matrix(K)
             K_ilu = scipy.sparse.linalg.spilu(
@@ -187,7 +204,14 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
         else:
             K_lu, K_piv = scipy.linalg.lu_factor(K)
             solution = scipy.linalg.lu_solve((K_lu, K_piv), rhs_aff)
+            residual = rhs_aff - K @ solution
+            residual_norm = np.linalg.norm(residual)
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
 
+        solution = symmetric_scale * solution
         delta_x_aff = solution[:n]
         delta_w_aff = solution[n:]
 
@@ -239,6 +263,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
         r_cent = -mu_corr * (ATZ1_1 + z2_1 - z3_1) + A.T @ (z1_1 * delta_y_aff * delta_z1_aff) \
                 + z2_1 * (delta_q_aff * delta_z2_aff) - z3_1 * (delta_lam_aff * delta_z3_aff)
         rhs_cent = np.concat((r_cent, np.zeros(e_bar)))
+        rhs_cent = symmetric_scale * rhs_cent
 
         if classic_ilu:
             solution = K_ilu.solve(rhs_cent)
@@ -267,7 +292,14 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
             solution = K_solver(rhs_cent)
         else:
             solution = scipy.linalg.lu_solve((K_lu, K_piv), rhs_cent)
+            residual = rhs_cent - K @ solution
+            residual_norm = np.linalg.norm(residual)
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
 
+        solution = symmetric_scale * solution
         delta_x_cent = solution[:n]
         delta_w_cent = solution[n:]
 

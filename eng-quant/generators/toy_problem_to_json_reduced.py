@@ -183,7 +183,7 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
 
 if __name__ == "__main__":
     # Number of copies of the network in the system
-    N=1
+    N=2
 
     # Whether the production and flow variables have upper bounds
     F_UPPER_BOUNDS=True

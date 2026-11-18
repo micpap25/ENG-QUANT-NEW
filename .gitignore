@@ -10,3 +10,4 @@ __pycache__/
 *.png
 *.csv
 MODEL_JSON_FORMAT.md
+drawings/

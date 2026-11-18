@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 import os
-os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-15"
-
-from qrisp import QuantumFloat
-from qrisp.operators import QubitOperator
-
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import draw_lcu_block_encoding_schematic, ratio
-import numpy as np
-import scipy
 import time
 
-from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion, MatrixEncoding,
-                    QuantumLinearSolver, ExecutionConfig, make_backend, amplitude_encoding,
-                    ExactStatevectorReadout, HadamardSignReadout, Refiner, ResourceEstimator)
-from qlsas.ft import PhysicalResourceEstimator, preset
+import numpy as np
+import scipy
+
+os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-15"
+
+from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
+from ipm.ipm_utility import draw_qlsa, phys_est_qlsa, print_qlsa_stats, ratio
+
+from qlsas import (
+    BlockEncodingInversion,
+    DalzellInversion,
+    ExecutionConfig,
+    ExactStatevectorReadout,
+    HadamardSignReadout,
+    LinearSystemProblem,
+    MatrixEncoding,
+    QuantumLinearSolver,
+    Refiner,
+    amplitude_encoding,
+    make_backend,
+)
 
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
@@ -26,8 +34,8 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                         saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                         symmetric_scaling: bool = True, omega_bound: bool = True, 
                         sparse: bool = False, classic_ilu: bool = False, qsim: bool = True, 
-                        refinement_iters: int = 6, ilu_drop_tol: float = 1e-6,
-                        hermitian_embedding: bool = False,
+                        refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
+                        ilu_rtol: float = 1e-12, hermitian_embedding: bool = False,
                         verbose: bool = False):
     np.set_printoptions(linewidth=400)
 
@@ -239,11 +247,11 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                 if hermitian_embedding:
                     print(f"Cond no after embedding: {np.linalg.cond(qK_padded)}")
 
-                # np.savetxt(f"input_lhs_{iteration}.csv", K, delimiter=",")
-                # np.savetxt(f"input_rhs_{iteration}.csv", rhs, delimiter=",")
+                # np.savetxt(f"drawings/input_lhs_{iteration}.csv", K, delimiter=",")
+                # np.savetxt(f"drawings/input_rhs_{iteration}.csv", rhs, delimiter=",")
 
-                # np.savetxt(f"output_lhs_{iteration}.csv", qK_padded, delimiter=",")
-                # np.savetxt(f"output_rhs_{iteration}.csv", qrhs_padded, delimiter=",")
+                # np.savetxt(f"drawings/output_lhs_{iteration}.csv", qK_padded, delimiter=",")
+                # np.savetxt(f"drawings/output_rhs_{iteration}.csv", qrhs_padded, delimiter=",")
 
             prob = LinearSystemProblem.from_matrix(qK_padded, qrhs_padded)
 
@@ -251,48 +259,27 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             # alg = DalzellInversion(target_error=0.01)
             enc = MatrixEncoding.from_array(qK_padded)
 
-            if verbose:
-                pass
-                # est = ResourceEstimator().estimate(alg, enc, prob.b, amplitude_encoding)
-                # print(f"Circuit depth: {est.circuit_depth}")
-                # print(f"Logical qubits: {est.logical_qubits}")
-                # print(f"Gate counts: {est.gate_counts}")
-                # print(f"Oracle calls: {est.oracle_calls}")
-                # print(f"Success probability: {est.success_probability}")
-                # print(f"Calls per success: {est.calls_per_success}")
-                # print(f"Kappa: {est.kappa}")
-                # print(f"Encoded kappa: {est.kappa_enc}")
-                # print(f"Subnormalization: {est.subnormalization}")
-
-                # full_circuit = alg.build(
-                #     prob, state_prep, success_mode="postselect"
-                # )
-                # full_register = full_circuit.operand_prep()
-                # full_circuit.block_encoding.apply(full_register)
-                # full_register.qs.compile().to_qiskit().draw(
-                #     "mpl", filename=f"full-circuit-iteration-{iteration}.png"
-                # )
-
-                # phys_est = PhysicalResourceEstimator(preset("superconducting_1e-3")).estimate(alg, prob, state_prep)
-                # print(phys_est.summary())
-                # print(f"Physical qubits: {phys_est.physical_qubits}")
-                # print(f"Runtime per attempt (seconds): {phys_est.runtime_s}")
-                # print(f"Expected runtime (seconds): {phys_est.expected_runtime_s}")
+            # if verbose:
+            #     print_qlsa_stats(alg, enc, prob)
+            #     draw_qlsa(alg, enc, prob, iteration)
+            #     phys_est_qlsa(alg, enc, prob)
 
             solver = QuantumLinearSolver(
                 qlsa=alg,
                 encoding=enc,
                 state_prep=amplitude_encoding,
-                readout=HadamardSignReadout(),
+                readout=ExactStatevectorReadout(),
+                # readout=HadamardSignReadout(),
                 backend=make_backend("qrisp"),
-                config=ExecutionConfig(shots=4000),
+                config=ExecutionConfig(shots=0),
             )
 
             if verbose:
                 print("Encoded problem")
 
             # result = solver.solve(prob)
-            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            result = Refiner(solver=solver, max_iters=refinement_iters,
+                             rtol=ilu_rtol).refine(prob)
             if hermitian_embedding:
                 solution = result.final_solution[next_pow_2:next_pow_2 + k]
             else:
@@ -300,9 +287,10 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
             residual = rhs - K_csc @ solution
             residual_norm = np.linalg.norm(residual)
-            print(
-                f"Residual norm: {residual_norm}"
-            )
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
         elif classic_ilu:
             K_csc = scipy.sparse.csc_matrix(K)
             K_ilu = scipy.sparse.linalg.spilu(
@@ -337,9 +325,10 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             solution = np.linalg.solve(K, rhs)
             residual = rhs - K @ solution
             residual_norm = np.linalg.norm(residual)
-            print(
-                f"Residual norm: {residual_norm}"
-            )
+            if verbose:
+                print(
+                    f"Residual norm: {residual_norm}"
+                )
 
         solution = symmetric_scale * solution
         delta_x = solution[:n]
