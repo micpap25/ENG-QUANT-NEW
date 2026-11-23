@@ -1,7 +1,7 @@
 import highspy
 
-# Take in an LP from a JSON and solve it
-# Use this to benchmark the linear approximation
+# Take in an LP from a mps file and solve it with public solver Highs.
+# The MPS file can be generated from classical_solve_lin_program.py
 def highs_solve(f_name: str = "model.mps"):
     h = highspy.Highs()
     h.setOptionValue("solver", "ipm")

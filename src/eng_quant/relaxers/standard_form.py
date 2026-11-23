@@ -1,6 +1,6 @@
 import json
 
-from variable_definitions import (
+from eng_quant import (
     setup_universal_var
 )
 

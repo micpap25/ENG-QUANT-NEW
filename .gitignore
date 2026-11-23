@@ -9,5 +9,11 @@ __pycache__/
 *.log
 *.png
 *.csv
-MODEL_JSON_FORMAT.md
+*.txt
 drawings/
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.wheels/

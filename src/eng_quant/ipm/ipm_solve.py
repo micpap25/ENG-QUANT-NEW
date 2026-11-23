@@ -3,17 +3,21 @@ from __future__ import annotations
 import os
 os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-10"
 
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import ratio
+from eng_quant.ipm import problem_to_eq_ineq_matrices, ratio, QLSAS_AVAILABLE
 import numpy as np
 import scipy
 import time
 
 from pymatting import ichol
+import eng_quant.ipm.ipm_utility as ipm_utility
 
-from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
-                    DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
-                    ExactStatevectorReadout, Refiner)
+try:
+    from qlsas import (LinearSystemProblem, BlockEncodingInversion, DalzellInversion,
+                        DefaultStatePrep, QuantumLinearSolver, ExecutionConfig, make_backend,
+                        ExactStatevectorReadout, HadamardSignReadout, MatrixEncoding, Refiner)
+except ImportError:
+    QLSAS_AVAILABLE = False
+
 
 # Solve a GasNet problem in a relaxed LP form.
 def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
@@ -26,7 +30,29 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 sparse: bool = False, qsim: bool = True, classic_ilu: bool = False, 
                 refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
                 omega_bound: bool = True, sym_neighborhood: bool = True,
-                infeas_factor: float = 2.0, verbose: bool = False):
+                infeas_factor: float = 2.0, backend_name: str = "qrisp",
+                dalzell_inversion: bool = False,
+                hadamard_readout: bool = False,
+                verbose: bool = False,
+                print_qlsa_stats: bool = False, draw_qlsa: bool = False,
+                phys_est_qlsa: bool = False):
+    if not QLSAS_AVAILABLE:
+        if qsim:
+            print("qlsas is not installed; qsim is being disabled.")
+        qsim = False
+        backend_name = "emulated"
+    supported_backends = {"emulated", "qrisp", "cudaq"}
+    if backend_name not in supported_backends:
+        raise ValueError(
+            f"Unknown backend {backend_name!r}; expected one of "
+            f"{sorted(supported_backends)}."
+        )
+    if classic_ilu and qsim:
+        raise ValueError("classic_ilu=True is incompatible with qsim=True.")
+    if backend_name != "emulated" and not qsim:
+        raise ValueError(
+            f"backend_name={backend_name!r} requires qsim=True."
+        )
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
@@ -176,17 +202,17 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         r = r_aff - mu * r_cent
 
         if qsim:
-            if sparse:
-                print("Sparse and qsim are incompatable")
-                return
-
             M_csc = scipy.sparse.csc_matrix(M)
+            if sparse:
+                M_dense = M.toarray()
+            else:
+                M_dense = M
             M_ichol = ichol(
                 M_csc, discard_threshold=ilu_drop_tol
             )
 
             M_pre = np.column_stack(
-                [M_ichol(M[:, column]) for column in range(M.shape[1])]
+                [M_ichol(M_dense[:, column]) for column in range(M_dense.shape[1])]
             )
             r_pre = M_ichol(r)
 
@@ -216,11 +242,29 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
             prob = LinearSystemProblem.from_matrix(qM_padded, qr_padded)
 
+            if dalzell_inversion:
+                alg = DalzellInversion(target_error=0.1)
+            else:
+                alg = BlockEncodingInversion(method="QSVT", target_error=0.1)
+
+            enc = MatrixEncoding.from_array(qM_padded)
+            if print_qlsa_stats:
+                ipm_utility.print_qlsa_stats(alg, enc, prob)
+            if draw_qlsa:
+                ipm_utility.draw_qlsa(alg, enc, prob, iteration)
+            if phys_est_qlsa:
+                ipm_utility.phys_est_qlsa(alg, enc, prob)
+
+            if hadamard_readout:
+                readout = HadamardSignReadout()
+            else:
+                readout = ExactStatevectorReadout()
+
             solver = QuantumLinearSolver(
-                qlsa=BlockEncodingInversion(method="QSVT", target_error=0.1),
+                qlsa=alg,
                 state_prep=DefaultStatePrep(),
-                readout=ExactStatevectorReadout(),
-                backend=make_backend("qrisp"),
+                readout=readout,
+                backend=make_backend(backend_name),
                 config=ExecutionConfig(success_mode="rus"),
             )
 

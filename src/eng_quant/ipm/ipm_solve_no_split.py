@@ -8,22 +8,30 @@ import scipy
 
 os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-15"
 
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import draw_qlsa, phys_est_qlsa, print_qlsa_stats, ratio
-
-from qlsas import (
-    BlockEncodingInversion,
-    DalzellInversion,
-    ExecutionConfig,
-    ExactStatevectorReadout,
-    HadamardSignReadout,
-    LinearSystemProblem,
-    MatrixEncoding,
-    QuantumLinearSolver,
-    Refiner,
-    amplitude_encoding,
-    make_backend,
+from eng_quant.ipm import (
+    problem_to_eq_ineq_matrices,
+    pad_matrix,
+    ratio,
+    QLSAS_AVAILABLE,
 )
+import eng_quant.ipm.ipm_utility as ipm_utility
+
+try:
+    from qlsas import (
+        BlockEncodingInversion,
+        DalzellInversion,
+        ExecutionConfig,
+        ExactStatevectorReadout,
+        HadamardSignReadout,
+        LinearSystemProblem,
+        MatrixEncoding,
+        QuantumLinearSolver,
+        Refiner,
+        amplitude_encoding,
+        make_backend,
+    )
+except ImportError:
+    QLSAS_AVAILABLE = False
 
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
@@ -35,8 +43,40 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
                         symmetric_scaling: bool = True, omega_bound: bool = True, 
                         sparse: bool = False, classic_ilu: bool = False, qsim: bool = True, 
                         refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
-                        ilu_rtol: float = 1e-12, hermitian_embedding: bool = False,
-                        verbose: bool = False):
+                        ilu_rtol: float = 1e-8, hermitian_embedding: bool = False,
+                        quantum_ilu_preconditioning: bool = False, backend_name: str = "emulated",
+                        dalzell_inversion: bool = False,
+                        hadamard_readout: bool = False,
+                        verbose: bool = False,
+                        print_qlsa_stats: bool = False, draw_qlsa: bool = False,
+                        phys_est_qlsa: bool = False):
+    if not QLSAS_AVAILABLE:
+        if qsim:
+            print("qlsas is not installed; qsim is being disabled.")
+        qsim = False
+        backend_name = "emulated"
+    supported_backends = {"emulated", "qrisp", "cudaq"}
+    if backend_name not in supported_backends:
+        raise ValueError(
+            f"Unknown backend {backend_name!r}; expected one of "
+            f"{sorted(supported_backends)}."
+        )
+    if backend_name != "emulated" and not qsim:
+        raise ValueError(
+            f"backend_name has been set, bu qsim is False."
+        )
+    if quantum_ilu_preconditioning and not qsim:
+        raise ValueError("quantum_ilu_preconditioning requires qsim=True.")
+    if quantum_ilu_preconditioning and hermitian_embedding:
+        raise ValueError(
+            "quantum_ilu_preconditioning is not supported with hermitian_embedding."
+        )
+    if quantum_ilu_preconditioning and backend_name == "emulated":
+        raise ValueError(
+            "quantum_ilu_preconditioning requires a circuit-execution backend "
+            "(backend_name='qrisp' or backend_name='cudaq')."
+        )
+
     np.set_printoptions(linewidth=400)
 
     # Gurobi output pops up here because of license file
@@ -200,50 +240,73 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
             rhs = symmetric_scale * rhs
 
         if qsim:
-            if sparse:
-                print("Sparse and qsim are incompatable")
-                return
-
             K_csc = scipy.sparse.csc_matrix(K)
+            if sparse:
+                K_dense = K.toarray()
+            else:
+                K_dense = K
             K_ilu = scipy.sparse.linalg.spilu(
                 K_csc, drop_tol=ilu_drop_tol
             )
 
-            # TODO: Get L and U, block encode K, L and U and then multiply block encodings to get K^{-1}K
-            # Keep this just to an option, since this will blow up the size of the circuit
-
-            K_pre = K_ilu.solve(K)
-            rhs_pre = K_ilu.solve(rhs)
-            # K_pre = K
-            # rhs_pre = rhs
-
-            # print(K_pre)
-
             next_pow_2 = int(2 ** np.ceil(np.log2(k)))
             diff = next_pow_2 - k
-            if diff > 0:
-                K_pre_padded = np.block([
-                    [K_pre, np.zeros((k, diff))],
-                    [np.zeros((diff, k)), np.eye(diff)]
-                ])
-                rhs_pre_padded = np.concatenate((rhs_pre, np.zeros(diff)))
-            else:
-                K_pre_padded = K_pre
-                rhs_pre_padded = rhs_pre
 
-            if hermitian_embedding:
-                qK_padded = np.block([
-                    [np.zeros((next_pow_2, next_pow_2)), K_pre_padded],
-                    [K_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
-                ])
-                qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
-            else:
-                qK_padded = K_pre_padded
+            if quantum_ilu_preconditioning:
+                identity = np.eye(k)
+                perm_r = identity[:, K_ilu.perm_r]
+                perm_c = identity[K_ilu.perm_c, :]
+
+                enc_k = MatrixEncoding.from_array(pad_matrix(K_dense, next_pow_2))
+                enc_l = MatrixEncoding.from_array(
+                    pad_matrix(K_ilu.L.toarray(), next_pow_2)
+                )
+                enc_u = MatrixEncoding.from_array(
+                    pad_matrix(K_ilu.U.toarray(), next_pow_2)
+                )
+                enc_perm_r = MatrixEncoding.from_array(pad_matrix(perm_r, next_pow_2))
+                enc_perm_c = MatrixEncoding.from_array(pad_matrix(perm_c, next_pow_2))
+                # SuperLU factors P_r K P_c = L U, so P K = P_c U^-1 L^-1 P_r K.
+                be_preconditioned = (
+                    enc_perm_c.block_encoding
+                    @ enc_u.inv(target_error=0.01)
+                    @ enc_l.inv(target_error=0.01)
+                    @ enc_perm_r.block_encoding
+                    @ enc_k.block_encoding
+                )
+
+                # This line is very slow; figure this out
+                enc = MatrixEncoding.from_block_encoding(
+                    be_preconditioned,
+                    n=next_pow_2.bit_length() - 1,
+                )
+
+                preconditioned_K = enc.matrix
+                rhs_pre_padded = np.concatenate(
+                    (K_ilu.solve(rhs), np.zeros(diff))
+                )
+                qK_padded = preconditioned_K
                 qrhs_padded = rhs_pre_padded
+            else:
+                K_pre = K_ilu.solve(K_dense)
+                rhs_pre = K_ilu.solve(rhs)
+                K_pre_padded = pad_matrix(K_pre, next_pow_2)
+                rhs_pre_padded = np.concatenate((rhs_pre, np.zeros(diff)))
+                preconditioned_K = K_pre_padded
+                if hermitian_embedding:
+                    qK_padded = np.block([
+                        [np.zeros((next_pow_2, next_pow_2)), preconditioned_K],
+                        [preconditioned_K.T, np.zeros((next_pow_2, next_pow_2))]
+                    ])
+                    qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
+                else:
+                    qK_padded = preconditioned_K
+                    qrhs_padded = rhs_pre_padded
+                enc = MatrixEncoding.from_array(qK_padded)
 
             if verbose:
-                print(f"Cond no before precond: {np.linalg.cond(K)}")
-                print(f"Cond no before embedding: {np.linalg.cond(K_pre)}")
+                print(f"Cond no before precond: {np.linalg.cond(K_dense)}")
+                print(f"Cond no after precond: {np.linalg.cond(preconditioned_K)}")
                 if hermitian_embedding:
                     print(f"Cond no after embedding: {np.linalg.cond(qK_padded)}")
 
@@ -255,27 +318,36 @@ def ipm_solve_no_split(f_name: str = "linear_approx.json", beta: float = .1,
 
             prob = LinearSystemProblem.from_matrix(qK_padded, qrhs_padded)
 
-            alg = BlockEncodingInversion(method="QSVT", target_error=.01)
-            # alg = DalzellInversion(target_error=0.01)
-            enc = MatrixEncoding.from_array(qK_padded)
+            if dalzell_inversion:
+                alg = DalzellInversion(target_error=.01)
+            else:
+                alg = BlockEncodingInversion(method="QSVT", target_error=.01)
 
-            # if verbose:
-            #     print_qlsa_stats(alg, enc, prob)
-            #     draw_qlsa(alg, enc, prob, iteration)
-            #     phys_est_qlsa(alg, enc, prob)
+            if print_qlsa_stats:
+                ipm_utility.print_qlsa_stats(alg, enc, prob)
+            if draw_qlsa:
+                ipm_utility.draw_qlsa(alg, enc, prob, iteration)
+            if phys_est_qlsa:
+                ipm_utility.phys_est_qlsa(alg, enc, prob)
+
+            if hadamard_readout:
+                readout = HadamardSignReadout()
+            else:
+                readout = ExactStatevectorReadout()
+
+            backend = make_backend(backend_name)
 
             solver = QuantumLinearSolver(
                 qlsa=alg,
                 encoding=enc,
                 state_prep=amplitude_encoding,
-                readout=ExactStatevectorReadout(),
-                # readout=HadamardSignReadout(),
-                backend=make_backend("qrisp"),
+                readout=readout,
+                backend=backend,
                 config=ExecutionConfig(shots=0),
             )
 
             if verbose:
-                print("Encoded problem")
+                print("Right before solve")
 
             # result = solver.solve(prob)
             result = Refiner(solver=solver, max_iters=refinement_iters,

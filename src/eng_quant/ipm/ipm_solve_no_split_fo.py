@@ -8,22 +8,30 @@ import scipy
 
 os.environ["QRISP_SIMULATOR_FLOAT_THRESH"] = "1e-15"
 
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import draw_qlsa, phys_est_qlsa, print_qlsa_stats, ratio
-
-from qlsas import (
-    BlockEncodingInversion,
-    DalzellInversion,
-    ExecutionConfig,
-    ExactStatevectorReadout,
-    HadamardSignReadout,
-    LinearSystemProblem,
-    MatrixEncoding,
-    QuantumLinearSolver,
-    Refiner,
-    amplitude_encoding,
-    make_backend,
+from eng_quant.ipm import (
+    pad_matrix,
+    ratio,
+    QLSAS_AVAILABLE,
+    problem_to_eq_ineq_matrices,
 )
+import eng_quant.ipm.ipm_utility as ipm_utility
+
+try:
+    from qlsas import (
+        BlockEncodingInversion,
+        DalzellInversion,
+        ExecutionConfig,
+        ExactStatevectorReadout,
+        HadamardSignReadout,
+        LinearSystemProblem,
+        MatrixEncoding,
+        QuantumLinearSolver,
+        Refiner,
+        amplitude_encoding,
+        make_backend,
+    )
+except ImportError:
+    QLSAS_AVAILABLE = False
 
 # Solve a GasNet problem in a relaxed LP form
 def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
@@ -36,7 +44,29 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
                             sparse: bool = False, classic_ilu: bool = False, qsim: bool = True,
                             refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
                             ilu_rtol: float = 1e-6, hermitian_embedding: bool = False,
-                            verbose: bool = False):
+                            backend_name: str = "emulated",
+                            dalzell_inversion: bool = False,
+                            hadamard_readout: bool = False,
+                            verbose: bool = False,
+                            print_qlsa_stats: bool = False, draw_qlsa: bool = False,
+                            phys_est_qlsa: bool = False):
+    if not QLSAS_AVAILABLE:
+        if qsim:
+            print("qlsas is not installed; qsim is being disabled.")
+        qsim = False
+        backend_name = "emulated"
+    supported_backends = {"emulated", "qrisp", "cudaq"}
+    if backend_name not in supported_backends:
+        raise ValueError(
+            f"Unknown backend {backend_name!r}; expected one of "
+            f"{sorted(supported_backends)}."
+        )
+    if classic_ilu and qsim:
+        raise ValueError("classic_ilu=True is incompatible with qsim=True.")
+    if backend_name != "emulated" and not qsim:
+        raise ValueError(
+            f"backend_name={backend_name!r} requires qsim=True."
+        )
     np.set_printoptions(linewidth=400)
 
     # Gurobi output pops up here because of license file
@@ -198,16 +228,16 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
             rhs = symmetric_scale * rhs
 
         if qsim:
-            if sparse:
-                print("Sparse and qsim are incompatible")
-                return
-
             lhs_csc = scipy.sparse.csc_matrix(lhs)
+            if sparse:
+                lhs_dense = lhs.toarray()
+            else:
+                lhs_dense = lhs
             lhs_ilu = scipy.sparse.linalg.spilu(
                 lhs_csc, drop_tol=ilu_drop_tol
             )
 
-            lhs_pre = lhs_ilu.solve(lhs)
+            lhs_pre = lhs_ilu.solve(lhs_dense)
             rhs_pre = lhs_ilu.solve(rhs)
 
             next_pow_2 = int(2 ** np.ceil(np.log2(lhs_size)))
@@ -215,10 +245,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
             diff = next_pow_2 - lhs_size
 
             if diff > 0:
-                lhs_pre_padded = np.block([
-                    [lhs_pre, np.zeros((lhs_size, diff))],
-                    [np.zeros((diff, lhs_size)), np.eye(diff)]
-                ])
+                lhs_pre_padded = pad_matrix(lhs_pre, next_pow_2)
                 rhs_pre_padded = np.concatenate((rhs_pre, np.zeros(diff)))
             else:
                 lhs_pre_padded = lhs_pre
@@ -249,22 +276,30 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
 
             prob = LinearSystemProblem.from_matrix(qlhs_padded, qrhs_padded)
 
-            alg = BlockEncodingInversion(method="QSVT", target_error=.01)
-            # alg = DalzellInversion(target_error=0.01)
+            if dalzell_inversion:
+                alg = DalzellInversion(target_error=.01)
+            else:
+                alg = BlockEncodingInversion(method="QSVT", target_error=.01)
             enc = MatrixEncoding.from_array(qlhs_padded)
 
-            # if verbose:
-            #     print_qlsa_stats(alg, enc, prob)
-            #     draw_qlsa(alg, enc, prob, iteration)
-            #     phys_est_qlsa(alg, enc, prob)
+            if print_qlsa_stats:
+                ipm_utility.print_qlsa_stats(alg, enc, prob)
+            if draw_qlsa:
+                ipm_utility.draw_qlsa(alg, enc, prob, iteration)
+            if phys_est_qlsa:
+                ipm_utility.phys_est_qlsa(alg, enc, prob)
+
+            if hadamard_readout:
+                readout = HadamardSignReadout()
+            else:
+                readout = ExactStatevectorReadout()
 
             solver = QuantumLinearSolver(
                 qlsa=alg,
                 encoding=enc,
                 state_prep=amplitude_encoding,
-                readout=ExactStatevectorReadout(),
-                # readout=HadamardSignReadout(),
-                backend=make_backend("qrisp"),
+                readout=readout,
+                backend=make_backend(backend_name),
                 config=ExecutionConfig(shots=0),
             )
 

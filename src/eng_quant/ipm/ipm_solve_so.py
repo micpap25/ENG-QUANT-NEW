@@ -1,24 +1,25 @@
 from __future__ import annotations
 
-import time
-
-from ipm.problem_to_eq_ineq_matrices import problem_to_eq_ineq_matrices
-from ipm.ipm_utility import ratio
+from eng_quant.ipm import problem_to_eq_ineq_matrices, ratio
 import numpy as np
 import scipy
+import time
 
-# Solve a GasNet problem in a relaxed LP form
-def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
-                            xi: float = 1 - 5e-8, omega: float = 1e6, epsilon: float = 1e-8,
-                            infeas_factor: float = 1e5, sym_neighborhood: bool = True,
-                            zeta_n: float = 5e-3, zeta_r: float = .5,
-                            alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
-                            saund_tom: bool = False, saund_tom_factor: float = 1e-16,
-                            symmetric_scaling: bool = True, omega_bound: bool = True,
-                            sparse: bool = True, classic_ilu: bool = False,
-                            refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
-                            verbose: bool = False):
-    np.set_printoptions(linewidth=400)
+from pymatting import ichol
+
+# Solve a GasNet problem in a relaxed LP form.
+def ipm_solve_so(f_name: str = "linear_approx.json",
+                xi: float = 1 - 5e-8, omega: float = 1e4,
+                w_update: bool = True, D_bound: float = 1 - 5e-8, D_mult: float = .9,
+                tau_init: float = 1e-4, scaling_tau: bool = False,
+                epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .5,
+                alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
+                saund_tom: bool = False, saund_tom_factor: float = 1e-16,
+                sparse: bool = False, classic_ilu: bool = False,
+                refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
+                omega_bound: bool = True, sym_neighborhood: bool = True,
+                infeas_factor: float = 2.0, verbose: bool = False):
+    np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
     start_time = time.time()
@@ -46,8 +47,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
     i_bar = len(b)
     e_bar = len(h)
     n = len(c) # Number of variables
-    m = i_bar + e_bar + 2*n  # Number of constraints
-    N = i_bar + 2*n # Number of terms in the complementarity
+    m = i_bar + 2*e_bar + 2*n  # Number of constraints
 
     # A naive bound on omega
     max_cost = np.dot(np.clip(c, 1, None), u)
@@ -65,13 +65,16 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
     
     # Run II-IPM
     x = np.zeros(n)
-    w = np.zeros(e_bar)
     y = np.ones(i_bar) * omega
+    w1 = np.ones(e_bar) * omega
+    w2 = np.ones(e_bar) * omega
     q = np.ones(n) * omega
     lam = np.ones(n) * omega
     z1 = np.ones(i_bar) * omega
-    z2 = np.ones(n) * omega
-    z3 = np.ones(n) * omega
+    z2 = np.ones(e_bar) * omega
+    z3 = np.ones(e_bar) * omega
+    z4 = np.ones(n) * omega
+    z5 = np.ones(n) * omega
 
     iteration = 0
     start_time = time.time()
@@ -87,261 +90,259 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
         u_x = u - x
 
         r_p_norm = np.linalg.norm(
-            A.T @ y + G.T @ w + q - lam + c
+            A.T @ y + G.T @ (w1 - w2) + q - lam + c
         )
         r_d_norm = np.linalg.norm(np.concat((
             A @ x + z1 - b,
-            Gx - h,
-            x + z2 - u,
-            -x + z3
+            Gx + z2 - h,
+            -Gx + z3 + h,
+            x + z4 - u,
+            -x + z5
         )))
-        r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
+        r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
+            + np.dot(q, z4) + np.dot(lam, z5)
 
         if r_c <= epsilon:
             print("Solution is below target precision.")
             break
 
         y_1 = np.reciprocal(y)
+        w1_1 = np.reciprocal(w1)
+        w2_1 = np.reciprocal(w2)
         q_1 = np.reciprocal(q)
         lam_1 = np.reciprocal(lam)
         z1_1 = np.reciprocal(z1)
         z2_1 = np.reciprocal(z2)
         z3_1 = np.reciprocal(z3)
+        z4_1 = np.reciprocal(z4)
+        z5_1 = np.reciprocal(z5)
 
         if saund_tom:
             yz1_1 = 1 / (z1 * y_1 + saund_tom_factor)
-            qz2_1 = 1 / (z2 * q_1 + saund_tom_factor)
-            lamz3_1 = 1 / (z3 * lam_1 + saund_tom_factor)
+            w1z2_1 = 1 / (z2 * w1_1 + saund_tom_factor)
+            w2z3_1 = 1 / (z3 * w2_1 + saund_tom_factor)
+            qz4_1 = 1 / (z4 * q_1 + saund_tom_factor)
+            lamz5_1 = 1 / (z5 * lam_1 + saund_tom_factor)
         else:
             yz1_1 = y * z1_1
-            qz2_1 = q * z2_1
-            lamz3_1 = lam * z3_1
+            w1z2_1 = w1 * z2_1
+            w2z3_1 = w2 * z3_1
+            qz4_1 = q * z4_1
+            lamz5_1 = lam * z5_1 
 
         if sparse:
             ATZ1_1Y = A.T.multiply(yz1_1)
+            GTZ_1W = G.T.multiply(w1z2_1 + w2z3_1)
         else:
             ATZ1_1Y = A.T * yz1_1
+            GTZ_1W = G.T * (w1z2_1 + w2z3_1)
 
         ATy = A.T @ y
-        GTw = G.T @ w
+        GTw1_w2 = G.T @ (w1 - w2)
 
         if sparse:
-            M = (ATZ1_1Y @ A + scipy.sparse.diags_array(qz2_1 + lamz3_1)).tocsc()
-        else:
-            M = (ATZ1_1Y @ A + np.diag(qz2_1 + lamz3_1))
-
-        if sparse:
+            M = (ATZ1_1Y @ A + GTZ_1W @ G
+                + scipy.sparse.diags_array(qz4_1 + lamz5_1)).tocsc()
             if saund_tom:
-                K = scipy.sparse.bmat(
-                    [[M + saund_tom_factor * scipy.sparse.eye(n, format="csc"), G.T],
-                    [G, -saund_tom_factor * scipy.sparse.eye(e_bar, format="csc")]], format="csc"
-                )
-            else:
-                K = scipy.sparse.bmat(
-                    [[M, G.T], [G, None]], format="csc"
-                )
+                M += saund_tom_factor * scipy.sparse.eye(M.shape[0], format="csc")
         else:
+            M = (ATZ1_1Y @ A + GTZ_1W @ G
+                + np.diag(qz4_1 + lamz5_1))
             if saund_tom:
-                K = np.block([
-                    [M + saund_tom_factor * np.eye(n, n), G.T],
-                    [G, -saund_tom_factor * np.eye(e_bar, e_bar)],
-                ])
-            else:
-                K = np.block([
-                    [M, G.T],
-                    [G, np.zeros((e_bar, e_bar))],
-                ])
+                M += saund_tom_factor * np.eye(M.shape[0])
 
-        symmetric_scale = np.ones(K.shape[0])
-        if symmetric_scaling:
-            if sparse:
-                row_max = np.asarray(np.abs(K).max(axis=1).toarray()).ravel()
-            else:
-                row_max = np.max(np.abs(K), axis=1)
-            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+        # Predictor Step
+        r_aff = ATZ1_1Y @ b_Ax + GTZ_1W @ h_Gx + qz4_1 * u_x - lamz5_1 * x \
+            - c - ATy - GTw1_w2 - q + lam
 
-            if sparse:
-                D = scipy.sparse.diags(symmetric_scale, format="csc")
-                K = D @ K @ D
-            else:
-                K = symmetric_scale[:, None] * K * symmetric_scale[None, :]
-
-        # Predictor-step solve
-        r_aff = ATZ1_1Y @ b_Ax + qz2_1 * u_x - lamz3_1 * x \
-            - c - ATy - GTw - q + lam
-        rhs_aff = np.concat((r_aff, h_Gx))
-        rhs_aff = symmetric_scale * rhs_aff
         if classic_ilu:
-            K_csc = scipy.sparse.csc_matrix(K)
-            K_ilu = scipy.sparse.linalg.spilu(
-                K_csc, drop_tol=ilu_drop_tol
+            M_csc = scipy.sparse.csc_matrix(M)
+            M_ichol = ichol(
+                M_csc, discard_threshold=ilu_drop_tol
             )
-            solution = K_ilu.solve(rhs_aff)
+            delta_x_aff = M_ichol(r_aff)
             if verbose:
-                residual = rhs_aff - K_csc @ solution
+                residual = r_aff - M_csc @ delta_x_aff
                 residual_norm = np.linalg.norm(residual)
                 print(
                     f"Before refinement residual norm: {residual_norm}"
                 )
             for refine_step in range(refinement_iters):
-                residual = rhs_aff - K_csc @ solution
-                correction = K_ilu.solve(residual)
-                candidate = solution + correction
-                candidate_residual = rhs_aff - K_csc @ candidate
+                residual = r_aff - M_csc @ delta_x_aff
+                correction = M_ichol(residual)
+                candidate = delta_x_aff + correction
+                candidate_residual = r_aff - M_csc @ candidate
                 residual_norm = np.linalg.norm(residual)
                 candidate_norm = np.linalg.norm(candidate_residual)
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
-                solution = candidate
+                delta_x_aff = candidate
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
                         f"residual norm: {candidate_norm}"
                     )
         elif sparse:
-            K_solver = scipy.sparse.linalg.factorized(K)
-            solution = K_solver(rhs_aff)
+            M_solver = scipy.sparse.linalg.factorized(M)
+            delta_x_aff = M_solver(r_aff)
         else:
-            K_lu, K_piv = scipy.linalg.lu_factor(K)
-            solution = scipy.linalg.lu_solve((K_lu, K_piv), rhs_aff)
-            residual = rhs_aff - K @ solution
-            residual_norm = np.linalg.norm(residual)
-            if verbose:
-                print(
-                    f"Residual norm: {residual_norm}"
-                )
-
-        solution = symmetric_scale * solution
-        delta_x_aff = solution[:n]
-        delta_w_aff = solution[n:]
+            M_lu, M_piv = scipy.linalg.lu_factor(M)
+            delta_x_aff = scipy.linalg.lu_solve((M_lu, M_piv), r_aff)
 
         # Recover the steps
         Adelta_x_aff = A @ delta_x_aff
+        Gdelta_x_aff = G @ delta_x_aff
 
         delta_z1_aff = b - Ax - z1 - Adelta_x_aff
-        delta_z2_aff = u - x - z2 - delta_x_aff
-        delta_z3_aff = x - z3 + delta_x_aff
+        delta_z2_aff = h - Gx - z2 - Gdelta_x_aff
+        delta_z3_aff = Gx - h - z3 + Gdelta_x_aff
+        delta_z4_aff = u - x - z4 - delta_x_aff
+        delta_z5_aff = x - z5 + delta_x_aff
 
         delta_y_aff = -y * z1_1 * delta_z1_aff - y
-        delta_q_aff = -q * z2_1 * delta_z2_aff - q
-        delta_lam_aff = c + ATy + GTw + q - lam \
-            + A.T @ delta_y_aff + G.T @ delta_w_aff + delta_q_aff
+        delta_w1_aff = -w1 * z2_1 * delta_z2_aff - w1
+        delta_w2_aff = -w2 * z3_1 * delta_z3_aff - w2
+        delta_q_aff = -q * z4_1 * delta_z4_aff - q
+        delta_lam_aff = c + ATy + GTw1_w2 + q - lam \
+            + A.T @ delta_y_aff + G.T @ (delta_w1_aff - delta_w2_aff) + delta_q_aff
 
         alpha_star_y_aff = ratio(y, delta_y_aff)
+        alpha_star_w1_aff = ratio(w1, delta_w1_aff)
+        alpha_star_w2_aff = ratio(w2, delta_w2_aff)
         alpha_star_q_aff = ratio(q, delta_q_aff)
         alpha_star_lam_aff = ratio(lam, delta_lam_aff)
         alpha_star_z1_aff = ratio(z1, delta_z1_aff)
         alpha_star_z2_aff = ratio(z2, delta_z2_aff)
         alpha_star_z3_aff = ratio(z3, delta_z3_aff)
+        alpha_star_z4_aff = ratio(z4, delta_z4_aff)
+        alpha_star_z5_aff = ratio(z5, delta_z5_aff)
 
         if verbose:
             print()
             print(f"alpha_star_y_aff = {alpha_star_y_aff}")
+            print(f"alpha_star_w1_aff = {alpha_star_w1_aff}")
+            print(f"alpha_star_w2_aff = {alpha_star_w2_aff}")
             print(f"alpha_star_q_aff = {alpha_star_q_aff}")
             print(f"alpha_star_lam_aff = {alpha_star_lam_aff}")
             print(f"alpha_star_z1_aff = {alpha_star_z1_aff}")
             print(f"alpha_star_z2_aff = {alpha_star_z2_aff}")
             print(f"alpha_star_z3_aff = {alpha_star_z3_aff}")
+            print(f"alpha_star_z4_aff = {alpha_star_z4_aff}")
+            print(f"alpha_star_z5_aff = {alpha_star_z5_aff}")
             print()
 
-        alpha_max_aff = min(alpha_star_y_aff, alpha_star_q_aff, alpha_star_lam_aff,
-                        alpha_star_z1_aff, alpha_star_z2_aff, alpha_star_z3_aff, 1.0)
+        alpha_max_aff = min(alpha_star_y_aff, alpha_star_w1_aff,
+                alpha_star_w2_aff, alpha_star_q_aff, alpha_star_lam_aff,
+                alpha_star_z1_aff, alpha_star_z2_aff, alpha_star_z3_aff,
+                alpha_star_z4_aff, alpha_star_z5_aff, 1.0)
 
         y_pred = y + alpha_max_aff * delta_y_aff
+        w1_pred = w1 + alpha_max_aff * delta_w1_aff
+        w2_pred = w2 + alpha_max_aff * delta_w2_aff
         q_pred = q + alpha_max_aff * delta_q_aff
         lam_pred = lam + alpha_max_aff * delta_lam_aff
         z1_pred = z1 + alpha_max_aff * delta_z1_aff
         z2_pred = z2 + alpha_max_aff * delta_z2_aff
         z3_pred = z3 + alpha_max_aff * delta_z3_aff
+        z4_pred = z4 + alpha_max_aff * delta_z4_aff
+        z5_pred = z5 + alpha_max_aff * delta_z5_aff
 
-        r_c_pred = np.dot(y_pred, z1_pred) + np.dot(q_pred, z2_pred) + np.dot(lam_pred, z3_pred)
+        r_c_pred = np.dot(y_pred, z1_pred) + np.dot(w1_pred, z2_pred) + np.dot(w2_pred, z3_pred) \
+            + np.dot(q_pred, z4_pred) + np.dot(lam_pred, z5_pred)
 
-        mu_corr = (r_c_pred / r_c)**3 * (r_c / N)
+        mu_corr = (r_c_pred / r_c)**3 * (r_c / m)
 
         # Corrector step
         ATZ1_1 = A.T @ z1_1
-        r_cent = -mu_corr * (ATZ1_1 + z2_1 - z3_1) + A.T @ (z1_1 * delta_y_aff * delta_z1_aff) \
-                + z2_1 * (delta_q_aff * delta_z2_aff) - z3_1 * (delta_lam_aff * delta_z3_aff)
-        rhs_cent = np.concat((r_cent, np.zeros(e_bar)))
-        rhs_cent = symmetric_scale * rhs_cent
+        r_cent = -mu_corr * (ATZ1_1 + G.T @ (z2_1 - z3_1) + z4_1 - z5_1) \
+                + A.T @ (z1_1 * delta_y_aff * delta_z1_aff) \
+                + G.T @ (z2_1 * delta_w1_aff * delta_z2_aff - z3_1 * delta_w2_aff * delta_z3_aff)\
+                + z4_1 * (delta_q_aff * delta_z4_aff) - z5_1 * (delta_lam_aff * delta_z5_aff)
 
         if classic_ilu:
-            solution = K_ilu.solve(rhs_cent)
+            delta_x_cent = M_ichol(r_cent)
             if verbose:
-                residual = rhs_cent - K_csc @ solution
+                residual = r_cent - M_csc @ delta_x_cent
                 residual_norm = np.linalg.norm(residual)
                 print(
                     f"Before refinement residual norm: {residual_norm}"
                 )
             for refine_step in range(refinement_iters):
-                residual = rhs_cent - K_csc @ solution
-                correction = K_ilu.solve(residual)
-                candidate = solution + correction
-                candidate_residual = rhs_cent - K_csc @ candidate
+                residual = r_cent - M_csc @ delta_x_cent
+                correction = M_ichol(residual)
+                candidate = delta_x_cent + correction
+                candidate_residual = r_cent - M_csc @ candidate
                 residual_norm = np.linalg.norm(residual)
                 candidate_norm = np.linalg.norm(candidate_residual)
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
-                solution = candidate
+                delta_x_cent = candidate
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
                         f"residual norm: {candidate_norm}"
                     )
         elif sparse:
-            solution = K_solver(rhs_cent)
+            delta_x_cent = M_solver(r_cent)
         else:
-            solution = scipy.linalg.lu_solve((K_lu, K_piv), rhs_cent)
-            residual = rhs_cent - K @ solution
-            residual_norm = np.linalg.norm(residual)
-            if verbose:
-                print(
-                    f"Residual norm: {residual_norm}"
-                )
+            delta_x_cent = scipy.linalg.lu_solve((M_lu, M_piv), r_cent)
 
-        solution = symmetric_scale * solution
-        delta_x_cent = solution[:n]
-        delta_w_cent = solution[n:]
-
-        # Recover the steps
         Adelta_x_cent = A @ delta_x_cent
+        Gdelta_x_cent = G @ delta_x_cent
 
         delta_z1_cent = -Adelta_x_cent
-        delta_z2_cent = -delta_x_cent
-        delta_z3_cent = delta_x_cent
+        delta_z2_cent = -Gdelta_x_cent
+        delta_z3_cent = Gdelta_x_cent
+        delta_z4_cent = -delta_x_cent
+        delta_z5_cent = delta_x_cent
 
         delta_y_cent = (-(delta_y_aff * delta_z1_aff) - y * delta_z1_cent + mu_corr) * z1_1
-        delta_q_cent = (-(delta_q_aff * delta_z2_aff)  - q * delta_z2_cent + mu_corr) * z2_1
-        delta_lam_cent = A.T @ delta_y_cent + G.T @ delta_w_cent + delta_q_cent
+        delta_w1_cent = (-(delta_w1_aff * delta_z2_aff) - w1 * delta_z2_cent + mu_corr) * z2_1
+        delta_w2_cent = (-(delta_w2_aff * delta_z3_aff) - w2 * delta_z3_cent + mu_corr) * z3_1
+        delta_q_cent = (-(delta_q_aff * delta_z4_aff)  - q * delta_z4_cent + mu_corr) * z4_1
+        delta_lam_cent = A.T @ delta_y_cent + G.T @ (delta_w1_cent - delta_w2_cent) + delta_q_cent
 
         delta_x = delta_x_aff + delta_x_cent
-        delta_w = delta_w_aff + delta_w_cent
+        delta_w1 = delta_w1_aff + delta_w1_cent
+        delta_w2 = delta_w2_aff + delta_w2_cent
         delta_y = delta_y_aff + delta_y_cent
         delta_q = delta_q_aff + delta_q_cent
         delta_lam = delta_lam_aff + delta_lam_cent
         delta_z1 = delta_z1_aff + delta_z1_cent
         delta_z2 = delta_z2_aff + delta_z2_cent
         delta_z3 = delta_z3_aff + delta_z3_cent
+        delta_z4 = delta_z4_aff + delta_z4_cent
+        delta_z5 = delta_z5_aff + delta_z5_cent
 
         alpha_star_y = ratio(y, delta_y)
+        alpha_star_w1 = ratio(w1, delta_w1)
+        alpha_star_w2 = ratio(w2, delta_w2)
         alpha_star_q = ratio(q, delta_q)
         alpha_star_lam = ratio(lam, delta_lam)
         alpha_star_z1 = ratio(z1, delta_z1)
         alpha_star_z2 = ratio(z2, delta_z2)
         alpha_star_z3 = ratio(z3, delta_z3)
+        alpha_star_z4 = ratio(z4, delta_z4)
+        alpha_star_z5 = ratio(z5, delta_z5)
 
         if verbose:
             print()
             print(f"alpha_star_y = {alpha_star_y}")
+            print(f"alpha_star_w1 = {alpha_star_w1}")
+            print(f"alpha_star_w2 = {alpha_star_w2}")
             print(f"alpha_star_q = {alpha_star_q}")
             print(f"alpha_star_lam = {alpha_star_lam}")
             print(f"alpha_star_z1 = {alpha_star_z1}")
             print(f"alpha_star_z2 = {alpha_star_z2}")
             print(f"alpha_star_z3 = {alpha_star_z3}")
+            print(f"alpha_star_z4 = {alpha_star_z4}")
+            print(f"alpha_star_z5 = {alpha_star_z5}")
             print()
 
-        alpha_max = min(alpha_star_y, alpha_star_q, alpha_star_lam,
-                        alpha_star_z1, alpha_star_z2, alpha_star_z3, 1.0)
+        alpha_max = min(alpha_star_y, alpha_star_w1, alpha_star_w2,
+                        alpha_star_q, alpha_star_lam, alpha_star_z1,
+                        alpha_star_z2, alpha_star_z3, alpha_star_z4,
+                        alpha_star_z5, 1.0)
 
         is_neighbor = False
 
@@ -352,17 +353,22 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
 
             x_alpha = x + alpha * delta_x
             y_alpha = y + alpha * delta_y
-            w_alpha = w + alpha * delta_w
+            w1_alpha = w1 + alpha * delta_w1
+            w2_alpha = w2 + alpha * delta_w2
             q_alpha = q + alpha * delta_q
             lam_alpha = lam + alpha * delta_lam
             z1_alpha = z1 + alpha * delta_z1
             z2_alpha = z2 + alpha * delta_z2
             z3_alpha = z3 + alpha * delta_z3
+            z4_alpha = z4 + alpha * delta_z4
+            z5_alpha = z5 + alpha * delta_z5
 
-            r_c_alpha = np.dot(y_alpha, z1_alpha) + np.dot(q_alpha, z2_alpha) + np.dot(lam_alpha, z3_alpha)
-            mu_alpha = r_c_alpha / N
+            r_c_alpha = np.dot(y_alpha, z1_alpha) + np.dot(w1_alpha, z2_alpha) \
+                + np.dot(w2_alpha, z3_alpha) + np.dot(q_alpha, z4_alpha) + np.dot(lam_alpha, z5_alpha)
+            mu_alpha = r_c_alpha / m
 
-            r_c_vec = np.concat((y_alpha * z1_alpha, q_alpha * z2_alpha, lam_alpha * z3_alpha))
+            r_c_vec = np.concat((y_alpha * z1_alpha, w1_alpha * z2_alpha, w2_alpha * z3_alpha,
+                                    q_alpha * z4_alpha, lam_alpha * z5_alpha))
 
             is_neighbor = True
 
@@ -386,7 +392,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
 
             # The primal residual should fall with the complementarity gap
             r_p_alpha_norm = np.linalg.norm(
-                A.T @ y_alpha + G.T @ w_alpha + q_alpha - lam_alpha + c
+                A.T @ y_alpha + G.T @ (w1_alpha - w2_alpha) + q_alpha - lam_alpha + c
             )
 
             # print(f"r_p_alpha_norm / r_p_norm: {r_p_alpha_norm / r_p_norm}")
@@ -407,9 +413,10 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
             Gx_alpha = G @ x_alpha
             r_d_alpha_norm = np.linalg.norm(np.concat((
                 A @ x_alpha + z1_alpha - b,
-                Gx_alpha - h,
-                x_alpha + z2_alpha - u,
-                -x_alpha + z3_alpha
+                Gx_alpha + z2_alpha - h,
+                -Gx_alpha + z3_alpha + h,
+                x_alpha + z4_alpha - u,
+                -x_alpha + z5_alpha
             )))
 
             # print(f"r_d_alpha_norm / r_d_norm: {r_d_alpha_norm / r_d_norm}")
@@ -445,39 +452,69 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
 
         x = x_alpha
         y = y_alpha
-        w = w_alpha
+        w1 = w1_alpha
+        w2 = w2_alpha
         q = q_alpha
         lam = lam_alpha
         z1 = z1_alpha
         z2 = z2_alpha
         z3 = z3_alpha
+        z4 = z4_alpha
+        z5 = z5_alpha
 
-        iteration += 1
+        # Adjust the w variables
+        # print(f"w1 before update: {w1}")
+        # print(f"w2 before update: {w2}")
+
+        if scaling_tau:
+            tau = tau_init * mu_corr
+        else:
+            tau = tau_init
+
+        if w_update:
+            D = np.maximum(tau, np.minimum(w1, w2) - tau)
+            alpha_D = min(1, np.min((w1 * z2 - (zeta_n * mu_alpha)) / (D * z2)),
+                np.min((w2 * z3 - (zeta_n * mu_alpha)) / (D * z3)))
+
+            # Ensure we don't reach a centrality boundary
+            # Can change the bound or the multiplier 
+            if alpha_D < D_bound:
+                alpha_D *= D_mult
+
+            w1 -= alpha_D * D
+            w2 -= alpha_D * D
+
+        # print(f"w1 after update: {w1}")
+        # print(f"w2 after update: {w2}")
 
         # If the problem is called infeasible, try raising infeas_factor.
         if max(np.max(np.abs(values), initial=0.0) for values in
-               (x, y, w, q, lam, z1, z2, z3)) > infeas_factor * m * omega:
+               (x, y, w1, w2, q, lam, z1, z2, z3, z4, z5)) > infeas_factor * m * omega:
             print("The problem is infeasible.")
             break
+
+        iteration += 1
 
         Gx = G @ x
 
         if verbose:
-            r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
+            r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
+                + np.dot(q, z4) + np.dot(lam, z5)
             print(f"Iteration {iteration}:")
-            primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
+            primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
             dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
             print(f"{'Primal objective:':25}{primal_obj:<15.8e}")
             print(f"{'Dual objective:':25}{dual_obj:<15.8e}")
             print()
-            print(f"{'Norm of Primal residual:':25}{np.linalg.norm(
-                A.T @ y + G.T @ w + q - lam + c
+            print(f"{'Primal residual:':25}{np.linalg.norm(
+                A.T @ y + G.T @ (w1 - w2) + q - lam + c
             ):<8.2e}")
-            print(f"{'Norm of Dual residual:':25}{np.linalg.norm(np.concat((
+            print(f"{'Dual residual:':25}{np.linalg.norm(np.concat((
                     A @ x + z1 - b,
-                    Gx - h,
-                    x + z2 - u,
-                    -x + z3
+                    Gx + z2 - h,
+                    -Gx + z3 + h,
+                    x + z4 - u,
+                    -x + z5
                 ))):<8.2e}")
             print(f"{'Abs. Compl. Gap:':25}{r_c:<8.2e}")
             scale = 1.0 + abs(primal_obj) + abs(dual_obj)
@@ -485,22 +522,24 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
             print()
 
     run_time = time.time() - start_time
-    primal_obj = np.dot(b, y) + np.dot(h, w) + np.dot(u, q) - const
+    primal_obj = np.dot(b, y) + np.dot(h, w1 - w2) + np.dot(u, q) - const
     dual_obj = np.dot(-c, x) - const  # pylint: disable=invalid-unary-operand-type
-    r_c = np.dot(y, z1) + np.dot(q, z2) + np.dot(lam, z3)
+    r_c = np.dot(y, z1) + np.dot(w1, z2) + np.dot(w2, z3) \
+        + np.dot(q, z4) + np.dot(lam, z5)
     print(f"The algorithm stopped after {iteration:d} iterations in {run_time:.2f} seconds.")
     print()
     print(f"{'Primal objective:':25}{primal_obj:<15.8e}")
     print(f"{'Dual objective:':25}{dual_obj:<15.8e}")
     print()
     print(f"{'Norm of Primal residual:':25}{np.linalg.norm(
-        A.T @ y + G.T @ w + q - lam + c
+        A.T @ y + G.T @ (w1 - w2) + q - lam + c
     ):<8.2e}")
     print(f"{'Norm of Dual residual:':25}{np.linalg.norm(np.concat((
             A @ x + z1 - b,
-            Gx - h,
-            x + z2 - u,
-            -x + z3
+            Gx + z2 - h,
+            -Gx + z3 + h,
+            x + z4 - u,
+            -x + z5
         ))):<8.2e}")
     print(f"{'Abs. Compl. Gap:':25}{r_c:<8.2e}")
     scale = 1.0 + abs(primal_obj) + abs(dual_obj)
@@ -512,4 +551,4 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
     return -dual_obj, run_time, x, r_c
 
 if __name__ == "__main__":
-    ipm_solve_no_split_so(verbose=False)
+    ipm_solve_so(verbose=True)

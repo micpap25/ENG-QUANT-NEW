@@ -1,13 +1,42 @@
 # IPM Utility Functions
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from qlsas import ResourceEstimator, amplitude_encoding, draw, draw_encoding
-from qlsas.ft import PhysicalResourceEstimator, preset
+try:
+    from qlsas import ResourceEstimator, amplitude_encoding, draw, draw_encoding
+    from qlsas.ft import PhysicalResourceEstimator, preset
+    QLSAS_AVAILABLE = True
+except ImportError:
+    ResourceEstimator = None
+    amplitude_encoding = None
+    draw = None
+    draw_encoding = None
+    PhysicalResourceEstimator = None
+    preset = None
+    QLSAS_AVAILABLE = False
+
+
+def pad_matrix(matrix: np.ndarray, size: int | None = None) -> np.ndarray:
+    """Pad a square matrix to a power-of-two size with an identity block."""
+    matrix = np.asarray(matrix)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.shape[0] == 0:
+        raise ValueError(f"matrix must be nonempty and square, got shape {matrix.shape}.")
+
+    n = matrix.shape[0]
+    if size is None:
+        size = 1 << (n - 1).bit_length()
+    if size < n or size & (size - 1):
+        raise ValueError(f"size must be a power of two at least {n}, got {size}.")
+
+    padded = np.eye(size, dtype=np.result_type(matrix.dtype, float))
+    padded[:n, :n] = matrix
+    return padded
+
 
 def print_qlsa_stats(alg, enc, prob):
     est = ResourceEstimator().estimate(alg, enc, prob.b, amplitude_encoding)
@@ -28,6 +57,7 @@ def print_qlsa_stats(alg, enc, prob):
     print(f"Gate counts: {enc_resources.gate_counts}")
 
 def draw_qlsa(alg, enc, prob, iteration):
+    os.makedirs("drawings", exist_ok=True)
     draw(alg, enc, prob.b, steps=2
          ).to_qiskit().draw("mpl", fold=40, filename=f"drawings/qlsa-logical-{iteration}.png")
 

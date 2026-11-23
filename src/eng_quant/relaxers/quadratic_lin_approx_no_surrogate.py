@@ -128,7 +128,7 @@ if __name__ == "__main__":
         return np.linspace(lower, lower + ((upper - lower)/concat), num)
 
     # The number of linear constraints to use per quadratic constraint
-    K = 10
+    K = 5
 
     # Whether to do an inner or outer approximation
     OUTER_APPROXIMATION = True

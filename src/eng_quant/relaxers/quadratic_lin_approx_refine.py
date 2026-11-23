@@ -1,7 +1,7 @@
 import json
 import numpy as np
 
-from variable_definitions import (
+from eng_quant import (
     setup_universal_var,
     setup_universal_linineq
 )
