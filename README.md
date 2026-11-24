@@ -1,6 +1,6 @@
 # ENG-QUANT
 
-ENG-QUANT provides generators, relaxations, classical testers, and interior-point solvers for optimization problems.
+ENG-QUANT provides generators, relaxations, classical testers, and interior-point solvers tailored to gas network flow optimization problems.
 
 ## Installation
 
