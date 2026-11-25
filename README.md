@@ -1,6 +1,6 @@
-# ENG-QUANT
+# IPM Implementation for NSF ENG-QUANT Project
 
-ENG-QUANT provides generators, relaxations, classical testers, and interior-point solvers tailored to gas network flow optimization problems.
+This repository provides generators, relaxations, classical testers, and interior-point solvers tailored to gas network flow optimization problems.
 
 ## Installation
 
