@@ -22,7 +22,7 @@ except ImportError:
 
 
 def pad_matrix(matrix: np.ndarray, size: int | None = None) -> np.ndarray:
-    """Pad a square matrix to a power-of-two size with an identity block."""
+    """Embed a square matrix in a power-of-two size identity matrix."""
     matrix = np.asarray(matrix)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.shape[0] == 0:
         raise ValueError(f"matrix must be nonempty and square, got shape {matrix.shape}.")
@@ -39,6 +39,7 @@ def pad_matrix(matrix: np.ndarray, size: int | None = None) -> np.ndarray:
 
 
 def print_qlsa_stats(alg, enc, prob):
+    """Print logical QLSA estimates and one-application encoding resources."""
     est = ResourceEstimator().estimate(alg, enc, prob.b, amplitude_encoding)
     print(f"Circuit depth: {est.circuit_depth}")
     print(f"Logical qubits: {est.logical_qubits}")
@@ -57,6 +58,7 @@ def print_qlsa_stats(alg, enc, prob):
     print(f"Gate counts: {enc_resources.gate_counts}")
 
 def draw_qlsa(alg, enc, prob, iteration):
+    """Save logical, gate-level, and encoding circuit diagrams for an iteration."""
     os.makedirs("drawings", exist_ok=True)
     draw(alg, enc, prob.b, steps=2
          ).to_qiskit().draw("mpl", fold=40, filename=f"drawings/qlsa-logical-{iteration}.png")
@@ -73,6 +75,7 @@ def draw_qlsa(alg, enc, prob, iteration):
     plt.close("all")
 
 def phys_est_qlsa(alg, enc, prob):
+    """Print physical resource estimates for a superconducting-device preset."""
     phys_est = PhysicalResourceEstimator(preset("superconducting_1e-3")
                                          ).estimate(alg, enc, prob.b, amplitude_encoding)
     print(phys_est.summary())
@@ -80,8 +83,8 @@ def phys_est_qlsa(alg, enc, prob):
     print(f"Runtime per attempt (seconds): {phys_est.runtime_s}")
     print(f"Expected runtime (seconds): {phys_est.expected_runtime_s}")
 
-# Ratio Test
 def ratio(var_vec, delta_var_vec):
+    """Ratio test; return the largest step up to one that keeps decreasing variables nonnegative."""
     decreasing = delta_var_vec < 0
     if not np.any(decreasing):
         return 1.0

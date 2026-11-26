@@ -26,16 +26,23 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 tau_init: float = 1e-4, scaling_tau: bool = False,
                 epsilon: float = 1e-8, zeta_n: float = 5e-3, zeta_r: float = .3,
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
-                saund_tom: bool = False, saund_tom_factor: float = 0,
+                saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                 sparse: bool = False, qsim: bool = True, classic_ilu: bool = False, 
-                refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
-                omega_bound: bool = True, sym_neighborhood: bool = True,
+                refinement_iters: int = 10, ir_rtol: float = 1e-6,
+                ilu_drop_tol: float = 1e-6,
+                omega_bound: bool = True, symmetric_scaling: bool = False,
+                sym_neighborhood: bool = True,
                 infeas_factor: float = 2.0, backend_name: str = "qrisp",
                 dalzell_inversion: bool = False,
                 hadamard_readout: bool = False,
                 verbose: bool = False,
                 print_qlsa_stats: bool = False, draw_qlsa: bool = False,
                 phys_est_qlsa: bool = False):
+    """Solve a relaxed LP with split equality multipliers.
+
+    See :mod:`eng_quant.ipm` for the shared numerical, linear-system, quantum,
+    and split-formulation option descriptions.
+    """
     if not QLSAS_AVAILABLE:
         if qsim:
             print("qlsas is not installed; qsim is being disabled.")
@@ -97,7 +104,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
     assert G.shape == (e_bar, n)
     assert len(u) == n
 
-    # Run II-IPM
+    # Initialize primal variables at zero and complementarity pairs positively.
     x = np.zeros(n)
     y = np.ones(i_bar) * omega
     w1 = np.ones(e_bar) * omega
@@ -140,7 +147,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
             print("Solution is below target precision.")
             break
 
-        mu = r_c * beta / m
+        mu = r_c * beta / m  # Centering target for this Newton step.
 
         if verbose:
             print(f"mu: {mu}")
@@ -184,6 +191,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         ATy = A.T @ y
         GTw1_w2 = G.T @ (w1 - w2)
 
+        # Eliminate complementarity variables to assemble the normal-equations matrix.
         if sparse:
             M = (ATZ1_1Y @ A + GTZ_1W @ G
                 + scipy.sparse.diags_array(qz4_1 + lamz5_1)).tocsc()
@@ -201,7 +209,23 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
         r = r_aff - mu * r_cent
 
+        symmetric_scale = np.ones(n)
+        if symmetric_scaling:
+            if sparse:
+                row_max = np.asarray(np.abs(M).max(axis=1).toarray()).ravel()
+            else:
+                row_max = np.max(np.abs(M), axis=1)
+            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+
+            if sparse:
+                D = scipy.sparse.diags(symmetric_scale, format="csc")
+                M = D @ M @ D
+            else:
+                M = symmetric_scale[:, None] * M * symmetric_scale[None, :]
+            r = symmetric_scale * r
+
         if qsim:
+            # Precondition and pad the Newton system before constructing its encoding.
             M_csc = scipy.sparse.csc_matrix(M)
             if sparse:
                 M_dense = M.toarray()
@@ -272,7 +296,9 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 print("Encoded problem")
 
             # result = solver.solve(prob)
-            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            result = Refiner(
+                solver=solver, max_iters=refinement_iters, rtol=ir_rtol
+            ).refine(prob)
             delta_x = result.final_solution[next_pow_2:next_pow_2 + n]
 
             residual = r - M_csc @ delta_x
@@ -302,6 +328,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 delta_x = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(r):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -311,6 +339,8 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
             delta_x = scipy.sparse.linalg.spsolve(M, r)
         else:
             delta_x = np.linalg.solve(M, r)
+
+        delta_x = symmetric_scale * delta_x
 
         # Recover the steps
         Adelta_x = A @ delta_x
@@ -337,6 +367,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
         # delta_lam = c + ATy + GTw1_w2 + q - lam \
         #     + A.T @ delta_y + G.T @ (delta_w1 - delta_w2) + delta_q
 
+        # Limit the step so positive dual and slack variables stay nonnegative.
         alpha_star_y = ratio(y, delta_y)
         alpha_star_w1 = ratio(w1, delta_w1)
         alpha_star_w2 = ratio(w2, delta_w2)
@@ -369,6 +400,7 @@ def ipm_solve(f_name: str = "linear_approx.json", beta: float = .1,
 
         is_neighbor = False
 
+        # Try fractions of the maximum positive step until the neighborhood tests pass.
         for alpha_factor in alpha_sched:
             alpha = alpha_factor * alpha_max
             if alpha <= alpha_min:

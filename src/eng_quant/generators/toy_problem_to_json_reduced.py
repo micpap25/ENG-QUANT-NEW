@@ -14,6 +14,16 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
                         gamma: float, lambd: float, eps: float, delta: float,
                         lp: float, lf: float, up: float, convex_relax: bool = True,
                         f_out: str = "toy.json", verbose: bool = False) -> None:
+    """Write a n-copy GasNet toy QCP to the model JSON format. This is reduced
+    by fixing all pressures at production (to max) and customer (to min) nodes.
+
+    ``f_upper_bounds`` adds derived flow caps; ``demand_inequality`` and
+    ``convex_relax`` choose inequality forms for demand and pressure-flow
+    constraints. ``gamma`` sets the quadratic pressure-flow coefficient;
+    ``lambd``, ``eps``, and ``delta`` set cost and demand parameters.
+    ``lp``/``lf`` are lower bounds for pressure/flow, and ``up`` is the
+    pressure upper bound.
+    """
 
     d = lambd**2 + delta
     sum_d = n*d
@@ -141,7 +151,7 @@ def toy_problem_to_json(n: int, f_upper_bounds: bool, demand_inequality: bool,
         edge_4["body"]["quadratic"] = [{"var1": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "var2": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "coef": gamma}]
-        constraints["gpc[transient" + str(gpc) + "_customer" + str(fc) + "]"] = edge_4
+        constraints["gpc[transient" + str(gpc) + "_customer" + str(gpc) + "]"] = edge_4
 
         if gpc > 1:
             edge_5 = quad_setup_fun()

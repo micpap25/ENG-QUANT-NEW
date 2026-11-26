@@ -5,6 +5,11 @@ from gurobipy import GRB
 # Take in a QCP from a JSON and solve it
 def solve_qcp_return_x(f_name: str,
                         verbose: bool = False) -> tuple[float | None, float | None, float | None]:
+    """Solve a quadratic model JSON with Gurobi.
+
+    Return objective, runtime, and primal values; ``verbose`` prints the
+    variable values.
+    """
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -92,6 +97,7 @@ def solve_qcp_return_x(f_name: str,
 
 def solve_qcp(f_name: str = "linear_approx.json",
                         verbose: bool = False) -> tuple[float | None, float | None]:
+    """Return only the objective and runtime from :func:`solve_qcp_return_x`."""
     val, time, _ = solve_qcp_return_x(f_name=f_name, verbose=verbose)
     return val, time
 

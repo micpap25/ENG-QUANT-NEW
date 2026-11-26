@@ -23,18 +23,28 @@ except ImportError:
 # Solve a GasNet problem in a relaxed LP form.
 def ipm_solve_fo(f_name: str = "linear_approx.json",
                             xi: float = 1 - 5e-8, omega: float = 1e4,
+                            w_update: bool = True, D_bound: float = 1 - 5e-8,
+                            D_mult: float = .5, tau_init: float = 1e-4,
+                            scaling_tau: bool = False,
                             epsilon: float = 1e-8, zeta_n: float = 5e-2, zeta_r: float = .5,
                             alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                             saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                             sparse: bool = True, qsim: bool = False,
-                            classic_ilu: bool = False, refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
-                            omega_bound: bool = True, sym_neighborhood: bool = True,
+                            classic_ilu: bool = False, refinement_iters: int = 3,
+                            ir_rtol: float = 1e-6, ilu_drop_tol: float = 1e-4,
+                            omega_bound: bool = True, symmetric_scaling: bool = False,
+                            sym_neighborhood: bool = True,
                             infeas_factor: float = 2.0, backend_name: str = "qrisp",
                             dalzell_inversion: bool = False,
                             hadamard_readout: bool = False,
                             verbose: bool = False,
                             print_qlsa_stats: bool = False, draw_qlsa: bool = False,
                             phys_est_qlsa: bool = False):
+    """Solve a relaxed LP using the first-order split-multiplier IPM.
+
+    See :mod:`eng_quant.ipm` for the shared option descriptions, including
+    split-formulation controls.
+    """
     if not QLSAS_AVAILABLE:
         if qsim:
             print("qlsas is not installed; qsim is being disabled.")
@@ -97,7 +107,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
     assert G.shape == (e_bar, n)
     assert len(u) == n
     
-    # Run II-IPM
+    # Initialize primal variables at zero and complementarity pairs positively.
     x = np.zeros(n)
     y = np.ones(i_bar) * omega
     w1 = np.ones(e_bar) * omega
@@ -174,6 +184,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
         ATy = A.T @ y
         GTw1_w2 = G.T @ (w1 - w2)
 
+        # Eliminate complementarity variables to assemble the normal-equations matrix.
         if sparse:
             M = (ATZ1_1Y @ A + GTZ_1W @ G
                  + scipy.sparse.diags_array(qz4_1 + lamz5_1)).tocsc()
@@ -186,6 +197,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 M = M + saund_tom_factor * scipy.sparse.eye(n, format="csc")
             else:
                 M = M + saund_tom_factor * np.eye(n)
+        # Reuse the Newton block for affine and centering directions.
         if sparse:
             lhs = scipy.sparse.block_diag((M, M), format="csc")
         else:
@@ -198,7 +210,23 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
         rhs_cent = r_cent
         rhs = np.concat((rhs_aff, rhs_cent))
 
+        symmetric_scale = np.ones(lhs.shape[0])
+        if symmetric_scaling:
+            if sparse:
+                row_max = np.asarray(np.abs(lhs).max(axis=1).toarray()).ravel()
+            else:
+                row_max = np.max(np.abs(lhs), axis=1)
+            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+
+            if sparse:
+                D = scipy.sparse.diags(symmetric_scale, format="csc")
+                lhs = D @ lhs @ D
+            else:
+                lhs = symmetric_scale[:, None] * lhs * symmetric_scale[None, :]
+            rhs = symmetric_scale * rhs
+
         if qsim:
+            # Precondition and pad the paired Newton systems before encoding.
             lhs_csc = scipy.sparse.csc_matrix(lhs)
             if sparse:
                 lhs_dense = lhs.toarray()
@@ -271,7 +299,9 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 print("Encoded problem")
 
             # result = solver.solve(prob)
-            result = Refiner(solver=solver, max_iters=refinement_iters).refine(prob)
+            result = Refiner(
+                solver=solver, max_iters=refinement_iters, rtol=ir_rtol
+            ).refine(prob)
             solution = result.final_solution[next_pow_2:next_pow_2 + lhs_size]
 
             residual = rhs - lhs_csc @ solution
@@ -302,6 +332,8 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 solution = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(rhs):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -312,6 +344,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
         else:
             solution = np.linalg.solve(lhs, rhs)
 
+        solution = symmetric_scale * solution
         delta_x_aff = solution[:n]
         delta_x_cent = solution[n:2 * n]
 
@@ -412,6 +445,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
         delta_z4 = delta_z4_aff + delta_z4_cent
         delta_z5 = delta_z5_aff + delta_z5_cent
 
+        # Limit the step so positive dual and slack variables stay nonnegative.
         alpha_star_y = ratio(y, delta_y)
         alpha_star_w1 = ratio(w1, delta_w1)
         alpha_star_w2 = ratio(w2, delta_w2)
@@ -445,6 +479,7 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
 
         is_neighbor = False
 
+        # Try fractions of the maximum positive step until the neighborhood tests pass.
         for alpha_factor in alpha_sched:
             alpha = alpha_factor * alpha_max
             if alpha <= alpha_min:
@@ -565,6 +600,23 @@ def ipm_solve_fo(f_name: str = "linear_approx.json",
         z3 = z3_alpha
         z4 = z4_alpha
         z5 = z5_alpha
+
+        # Adjust the split equality multipliers.
+        if scaling_tau:
+            tau = tau_init * mu_corr
+        else:
+            tau = tau_init
+
+        if w_update:
+            D = np.maximum(tau, np.minimum(w1, w2) - tau)
+            alpha_D = min(1, np.min((w1 * z2 - (zeta_n * mu_alpha)) / (D * z2)),
+                np.min((w2 * z3 - (zeta_n * mu_alpha)) / (D * z3)))
+
+            if alpha_D < D_bound:
+                alpha_D *= D_mult
+
+            w1 -= alpha_D * D
+            w2 -= alpha_D * D
 
         # If the problem is called infeasible, try raising infeas_factor.
         if max(np.max(np.abs(values), initial=0.0) for values in

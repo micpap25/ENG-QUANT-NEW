@@ -5,6 +5,11 @@ import math
 # If any variable with a lower bound is used in quadratics, throw an error
 def remap_lower_bounds(f_name: str = "linear_approx.json", verbose: bool = False,
                         quadratic_check: bool = True, lb: float = 0) -> None:
+    """Shift variables' lower bounds to ``lb`` and move offsets into constants.
+
+    ``quadratic_check`` rejects shifted variables used in quadratic terms,
+    which this linear-only offset update does not expand.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)

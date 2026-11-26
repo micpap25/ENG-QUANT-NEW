@@ -4,9 +4,14 @@ from eng_quant import (
     setup_universal_var
 )
 
-# Change a program to standard form by introducing positive slack variables.
+# Change a program to standard form by introducing nonnegative slack variables.
 def standard_form(slack_ub: float | None = None,
                     f_name: str = "linear_approx.json", verbose: bool = False) -> None:
+    """Replace each inequality with an equality and a nonnegative slack variable.
+
+    ``slack_ub`` optionally sets an upper bound; a tight bound can make the
+    transformed model infeasible.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)

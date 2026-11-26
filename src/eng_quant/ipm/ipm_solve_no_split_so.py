@@ -15,8 +15,13 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
                             saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                             symmetric_scaling: bool = True, omega_bound: bool = True,
                             sparse: bool = True, classic_ilu: bool = False,
-                            refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
-                            verbose: bool = False):
+                            refinement_iters: int = 3, ir_rtol: float = 1e-6,
+                            ilu_drop_tol: float = 1e-4, verbose: bool = False):
+    """Solve a relaxed LP using the second-order no-split IPM.
+
+    See :mod:`eng_quant.ipm` for the shared numerical and linear-system option
+    descriptions.
+    """
     np.set_printoptions(linewidth=400)
 
     # Gurobi output pops up here because of license file
@@ -61,8 +66,9 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
     assert A.shape == (i_bar, n)
     assert G.shape == (e_bar, n)
     assert len(u) == n
-    
+
     # Run II-IPM
+    # Initialize free variables at zero; start positive variables at omega.
     x = np.zeros(n)
     w = np.zeros(e_bar)
     y = np.ones(i_bar) * omega
@@ -124,6 +130,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
         ATy = A.T @ y
         GTw = G.T @ w
 
+        # Eliminate complementarity variables to form the primal block M.
         if sparse:
             M = (ATZ1_1Y @ A + scipy.sparse.diags_array(qz2_1 + lamz3_1)).tocsc()
         else:
@@ -151,6 +158,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
                     [G, np.zeros((e_bar, e_bar))],
                 ])
 
+        # Apply matching row/column scaling to balance the KKT system.
         symmetric_scale = np.ones(K.shape[0])
         if symmetric_scaling:
             if sparse:
@@ -165,7 +173,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
             else:
                 K = symmetric_scale[:, None] * K * symmetric_scale[None, :]
 
-        # Predictor-step solve
+        # Solve the affine predictor direction before forming the centering correction.
         r_aff = ATZ1_1Y @ b_Ax + qz2_1 * u_x - lamz3_1 * x \
             - c - ATy - GTw - q + lam
         rhs_aff = np.concat((r_aff, h_Gx))
@@ -192,6 +200,8 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 solution = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(rhs_aff):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -282,6 +292,8 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 solution = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(rhs_cent):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -322,6 +334,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
         delta_z2 = delta_z2_aff + delta_z2_cent
         delta_z3 = delta_z3_aff + delta_z3_cent
 
+        # Limit the step so positive dual and slack variables stay nonnegative.
         alpha_star_y = ratio(y, delta_y)
         alpha_star_q = ratio(q, delta_q)
         alpha_star_lam = ratio(lam, delta_lam)
@@ -344,6 +357,7 @@ def ipm_solve_no_split_so(f_name: str = "linear_approx.json",
 
         is_neighbor = False
 
+        # Try fractions of the maximum positive step until the neighborhood tests pass.
         for alpha_factor in alpha_sched:
             alpha = alpha_factor * alpha_max
             if alpha <= alpha_min:

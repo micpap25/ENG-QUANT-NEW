@@ -14,6 +14,13 @@ def toy_problem_to_json(n: int, x_upper_bounds: bool, f_upper_bounds: bool, dema
                         gamma: float, lambd: float, eps: float, delta: float,
                         lx: float, lp: float, lf: float, up: float, convex_relax: bool = True,
                         f_out: str = "toy.json", verbose: bool = False) -> None:
+    """Write the legacy GasNet QCP, including production variables ``x``.
+
+    The bound flags enable caps on production and flow variables;
+    ``demand_inequality`` and ``convex_relax`` select inequality forms.
+    ``gamma`` controls quadratic pressure-flow terms; ``lx``, ``lp``, ``lf``,
+    and ``up`` set variable bounds.
+    """
 
     d = lambd**2 + delta
     sum_d = n*d
@@ -182,7 +189,7 @@ def toy_problem_to_json(n: int, x_upper_bounds: bool, f_upper_bounds: bool, dema
         edge_4["body"]["quadratic"] = [{"var1": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "var2": "f[transient" + str(gpc) + "_customer" + str(gpc) + "]", \
                                         "coef": gamma}]
-        constraints["gpc[transient" + str(gpc) + "_customer" + str(fc) + "]"] = edge_4
+        constraints["gpc[transient" + str(gpc) + "_customer" + str(gpc) + "]"] = edge_4
 
         if gpc > 1:
             edge_5 = quad_setup_fun()

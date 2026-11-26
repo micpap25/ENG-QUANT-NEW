@@ -6,6 +6,11 @@ from gurobipy import GRB
 # Use this to benchmark the linear approximation
 def solve_lp_return_x(f_name: str = "linear_approx.json",
                 verbose: bool = False) -> tuple[float | None, float | None, float | None]:
+    """Solve a linear model JSON with Gurobi.
+
+    Return objective, runtime, and primal values; ``verbose`` controls variable
+    and solver-quality output.
+    """
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -92,6 +97,7 @@ def solve_lp_return_x(f_name: str = "linear_approx.json",
 
 def solve_lp(f_name: str = "linear_approx.json",
                         verbose: bool = False) -> tuple[float | None, float | None]:
+    """Return only the objective and runtime from :func:`solve_lp_return_x`."""
     val, time, _ = solve_lp_return_x(f_name=f_name, verbose=verbose)
     return val, time
 

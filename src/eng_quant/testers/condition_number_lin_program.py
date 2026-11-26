@@ -10,6 +10,11 @@ import matplotlib.pyplot as plt
 # This assumes the variables are bounded on both sides
 def condition_number_nes_basic(bounds: int = 2, f_name: str = "linear_approx.json",
                                 verbose: bool = False) -> float:
+    """Estimate conditioning of the IPM normal-equations matrix.
+
+    ``bounds`` weights the identity term used to approximate the contribution
+    of variable bounds in ``2 G.T @ G + A.T @ A + bounds * I``.
+    """
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -108,6 +113,7 @@ def condition_number_nes_basic(bounds: int = 2, f_name: str = "linear_approx.jso
 # Ignoring the bound constraints
 def condition_number_no_bounds(f_name: str = "linear_approx.json",
                                 verbose: bool = False) -> float:
+    """Return the condition number of the non-bound constraint matrix."""
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -140,6 +146,7 @@ def condition_number_no_bounds(f_name: str = "linear_approx.json",
 # Take in an LP and compute the condition number of A
 def condition_number(f_name: str = "linear_approx.json",
                         verbose: bool = False) -> float:
+    """Return the condition number after adding rows for finite variable bounds."""
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 

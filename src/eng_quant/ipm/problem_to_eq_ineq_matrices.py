@@ -7,11 +7,14 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 
-# Take in an LP from a JSON, return A, b, G, h, u, c
-# All variables should have a lower bound of exactly 0 (use remap_lower_bounds.py)
-# Use Gurobi to make it easy
+# Convert model JSON to the matrix and vector inputs used by the IPM.
 def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool = False,
                                 verbose: bool = False) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
+    """Convert a linear model JSON to ``(A, b, G, h, u, c, const)``.
+
+    Variables must be continuous and have lower bound zero. ``sparse``
+    controls whether the returned constraint matrices remain sparse.
+    """
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
 
@@ -28,11 +31,11 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
     for var_name, variable in variables.items():
         if variable["lower"] is not None and variable["lower"] != 0.0:
             print(f"Error, the lower bound for {var_name} should be 0")
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
         if variable["upper"] is not None:
             if variable["upper"] <= 0.0:
                 print(f"Error, the upper bound for {var_name} should be more than 0")
-                return None, None, None, None, None, None
+                return None, None, None, None, None, None, None
             x = m.addVar(vtype=GRB.CONTINUOUS, name=var_name, ub = variable["upper"])
         else:
             x = m.addVar(vtype=GRB.CONTINUOUS, name=var_name)
@@ -66,6 +69,7 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
             m.addConstr(a <= constraint_data["upper"], constraint_name)
         # Lower-bounded constraint (reformulate as upper-bounded constraint)
         else:
+            # Negating the row converts a lower bound into the upper-bounded form -a <= -lower.
             m.addConstr(-a <= -constraint_data["lower"], constraint_name)
 
     m.update()
@@ -74,6 +78,7 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
     ineq_idx = senses != '='
     eq_idx = senses == '='
 
+    # Keep inequality and equality rows separate for the primal-dual IPM system.
     A_full = m.getA()
     A = A_full[ineq_idx, :]
     G = A_full[eq_idx, :]
@@ -100,4 +105,4 @@ def problem_to_eq_ineq_matrices(f_name: str = "linear_approx.json", sparse: bool
 
 
 if __name__ == "__main__":
-    A, b, G, h, u, c = problem_to_eq_ineq_matrices(verbose=True)
+    A, b, G, h, u, c, _ = problem_to_eq_ineq_matrices(verbose=True)

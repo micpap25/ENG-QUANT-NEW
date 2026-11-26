@@ -42,14 +42,19 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
                             saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                             symmetric_scaling: bool = True, omega_bound: bool = True,
                             sparse: bool = False, classic_ilu: bool = False, qsim: bool = True,
-                            refinement_iters: int = 10, ilu_drop_tol: float = 1e-6,
-                            ilu_rtol: float = 1e-6, hermitian_embedding: bool = False,
+                            refinement_iters: int = 10, ir_rtol: float = 1e-6,
+                            ilu_drop_tol: float = 1e-6,
                             backend_name: str = "emulated",
                             dalzell_inversion: bool = False,
                             hadamard_readout: bool = False,
                             verbose: bool = False,
                             print_qlsa_stats: bool = False, draw_qlsa: bool = False,
                             phys_est_qlsa: bool = False):
+    """Solve a relaxed LP using the first-order no-split IPM.
+
+    See :mod:`eng_quant.ipm` for the shared numerical and linear-system option
+    descriptions.
+    """
     if not QLSAS_AVAILABLE:
         if qsim:
             print("qlsas is not installed; qsim is being disabled.")
@@ -114,7 +119,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
     assert G.shape == (e_bar, n)
     assert len(u) == n
     
-    # Run II-IPM
+    # Initialize primal variables at zero and complementarity pairs positively.
     x = np.zeros(n)
     w = np.zeros(e_bar)
     y = np.ones(i_bar) * omega
@@ -176,11 +181,13 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
         ATy = A.T @ y
         GTw = G.T @ w
 
+        # Eliminate complementarity variables to form the primal block M.
         if sparse:
             M = (ATZ1_1Y @ A + scipy.sparse.diags_array(qz2_1 + lamz3_1)).tocsc()
         else:
             M = (ATZ1_1Y @ A + np.diag(qz2_1 + lamz3_1))
 
+        # Pair the KKT system for affine and centering directions.
         if sparse:
             if saund_tom:
                 K = scipy.sparse.bmat(
@@ -213,6 +220,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
         rhs = np.concat((rhs_aff, rhs_cent))
 
         symmetric_scale = np.ones(lhs.shape[0])
+        # Apply matching row/column scaling to balance the paired KKT system.
         if symmetric_scaling:
             if sparse:
                 row_max = np.asarray(np.abs(lhs).max(axis=1).toarray()).ravel()
@@ -228,6 +236,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
             rhs = symmetric_scale * rhs
 
         if qsim:
+            # Precondition and pad the paired system before quantum encoding.
             lhs_csc = scipy.sparse.csc_matrix(lhs)
             if sparse:
                 lhs_dense = lhs.toarray()
@@ -251,21 +260,12 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
                 lhs_pre_padded = lhs_pre
                 rhs_pre_padded = rhs_pre
 
-            if hermitian_embedding:
-                qlhs_padded = np.block([
-                    [np.zeros((next_pow_2, next_pow_2)), lhs_pre_padded],
-                    [lhs_pre_padded.T, np.zeros((next_pow_2, next_pow_2))]
-                ])
-                qrhs_padded = np.concatenate((rhs_pre_padded, np.zeros(next_pow_2)))
-            else:
-                qlhs_padded = lhs_pre_padded
-                qrhs_padded = rhs_pre_padded
+            qlhs_padded = lhs_pre_padded
+            qrhs_padded = rhs_pre_padded
 
             if verbose:
                 print(f"Cond no before precond: {np.linalg.cond(lhs)}")
-                print(f"Cond no before embedding: {np.linalg.cond(lhs_pre)}")
-                if hermitian_embedding:
-                    print(f"Cond no after embedding: {np.linalg.cond(qlhs_padded)}")
+                print(f"Cond no after precond: {np.linalg.cond(lhs_pre)}")
 
                 np.savetxt(f"drawings/input_lhs_{iteration}.csv", lhs, delimiter=",")
                 np.savetxt(f"drawings/input_rhs_{iteration}.csv", rhs, delimiter=",")
@@ -308,11 +308,8 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
             
             # result = solver.solve(prob)
             result = Refiner(solver=solver, max_iters=refinement_iters,
-                             rtol=ilu_rtol).refine(prob)
-            if hermitian_embedding:
-                solution = result.final_solution[next_pow_2:next_pow_2 + lhs_size]
-            else:
-                solution = result.final_solution[:lhs_size]
+                             rtol=ir_rtol).refine(prob)
+            solution = result.final_solution[:lhs_size]
 
             residual = rhs - lhs_csc @ solution
             residual_norm = np.linalg.norm(residual)
@@ -343,6 +340,8 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 solution = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(rhs):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -431,6 +430,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
         delta_z2 = delta_z2_aff + delta_z2_cent
         delta_z3 = delta_z3_aff + delta_z3_cent
 
+        # Limit the step so positive dual and slack variables stay nonnegative.
         alpha_star_y = ratio(y, delta_y)
         alpha_star_q = ratio(q, delta_q)
         alpha_star_lam = ratio(lam, delta_lam)
@@ -453,6 +453,7 @@ def ipm_solve_no_split_fo(f_name: str = "linear_approx.json",
 
         is_neighbor = False
 
+        # Try fractions of the maximum positive step until the neighborhood tests pass.
         for alpha_factor in alpha_sched:
             alpha = alpha_factor * alpha_max
             if alpha <= alpha_min:

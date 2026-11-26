@@ -16,6 +16,13 @@ def quadratic_lin_approx_no_surrogate(k: int, outer_approximation: bool,
                                         endpoints: bool = True,
                                         f_name: str = "toy.json",
                                         verbose: bool = False) -> None:
+    """Replace single-variable square terms with tangent or secant cuts.
+
+    ``k`` controls the cuts per term; ``outer_approximation`` selects tangents
+    instead of secants. ``points_function`` chooses cut locations (by default uniform),
+    and ``endpoints`` includes the variable bounds among them. ``remove_division``
+    scales secant constraints by their interval width.
+    """
 
     if not outer_approximation and remove_division:
         print("You are setting remove_division to True for a no-surrogate approximation.\n" \
@@ -96,6 +103,7 @@ def quadratic_lin_approx_no_surrogate(k: int, outer_approximation: bool,
                     constraint = copy.deepcopy(constraint_data)
                     constraint["body"]["quadratic"] = []
                     if remove_division:
+                        # Scale by interval width to avoid division by a float.
                         m = fun_point_2 - fun_point_1
                         constraint["body"]["constant"] *= lambd
                         constraint["body"]["constant"] += lambd*fun_point_1 - m*point_1

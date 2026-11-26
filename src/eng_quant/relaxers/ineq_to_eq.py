@@ -4,6 +4,11 @@ import json
 # This may make it infeasible.
 # This isn't putting the problem in standard form, this is altering the problem.
 def ineq_to_eq(f_name: str = "toy.json", verbose: bool = False) -> None:
+    """Convert linear inequalities in ``f_name`` to equalities in the output.
+
+    This is a modeling change, not standard-form conversion, and can alter
+    feasibility.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)

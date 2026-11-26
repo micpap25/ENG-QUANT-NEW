@@ -8,6 +8,11 @@ type FloatArray = Sequence[float] | NDArray[np.float64]
 # Linear relaxation of a convex QCP
 # Removes all the quadratic terms to just leave an LP.
 def quadratic_model_remove_quad(f_name: str = "toy.json", verbose: bool = False) -> None:
+    """Drop constraints containing quadratic terms to produce a linear model.
+
+    This removes those constraints rather than approximating their quadratic
+    expressions, and heavily alters the program.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)

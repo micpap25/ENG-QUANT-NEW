@@ -4,15 +4,23 @@ This repository provides generators, relaxations, classical testers, and interio
 
 ## Installation
 
-Install the package in a virtual environment:
+Install the package and its runtime dependencies in a virtual environment:
 
-```powershell
+```sh
 python -m pip install .
+```
+
+Install the optional test dependency and run the test suite with:
+
+```sh
+python -m pip install ".[test]"
+python -m pytest
 ```
 
 ## Usage
 
-Start with [experiments/quickstart.ipynb](experiments/quickstart.ipynb).
+Start with [experiments/quickstart.ipynb](experiments/quickstart.ipynb). Run it
+with `experiments/` as the working directory so its relative JSON paths resolve.
 
 Run examples from the repository's `experiments` directory:
 
@@ -22,7 +30,7 @@ from eng_quant.relaxers import quadratic_lin_approx_no_surrogate
 from eng_quant.ipm import ipm_solve_no_split
 ```
 
-See `MODEL_JSON_FORMAT.md` for the model JSON format.
+See [MODEL_JSON_FORMAT.md](MODEL_JSON_FORMAT.md) for the model JSON format.
 
 ## Quantum solvers
 

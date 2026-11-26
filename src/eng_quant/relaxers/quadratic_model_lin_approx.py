@@ -20,6 +20,15 @@ def quadratic_model_lin_approx(k: int, outer_approximation: bool,
                                 points_function: Callable[[float, float, int], FloatArray] = np.linspace,
                                 endpoints: bool = True,
                                 f_name: str = "toy.json", verbose: bool = False) -> None:
+    """Approximate square terms using a surrogate variable and linear cuts.
+
+    ``k`` sets the number of cuts; ``outer_approximation`` selects tangents
+    rather than secants. ``coefficient_surrogate`` stores the quadratic
+    coefficient in the surrogate, and the two bound flags control its bounds.
+    ``points_function`` selects cut locations; by default, points are placed
+    uniformly along their range. ``endpoints`` determines if the ends of the
+    variable ranges are used for placing cuts.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
@@ -81,6 +90,7 @@ def quadratic_model_lin_approx(k: int, outer_approximation: bool,
 
             # Turn the quadratic constraint into a linear constraint
             constraint_data["body"]["quadratic"] = []
+            # Keep the coefficient either in the surrogate or in the original constraint.
             if coefficient_surrogate:
                 constraint_data["body"]["linear"].append({"var": surrogate_var_name, "coef": 1.0})
             else:

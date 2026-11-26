@@ -20,6 +20,13 @@ def quadratic_model_lin_approx_refine(k: int, outer_approximation: bool,
                                         surrogate_bound_above: bool, remove_division: bool = False,
                                         endpoints: bool = True,
                                         f_name: str = "toy.json", verbose: bool = False) -> None:
+    """Build per-variable tangent or secant cuts with surrogate variables.
+
+    ``k`` sets cuts per variable; ``outer_approximation`` selects tangents.
+    ``points_function`` supplies locations per quadratic variable.
+    ``coefficient_surrogate`` and the bound flags control surrogate scaling
+    and bounds; ``remove_division`` scales secant constraints by interval width.
+    """
 
     with open(f_name, 'r', encoding='utf-8') as file:
         data = json.load(file)
@@ -83,6 +90,7 @@ def quadratic_model_lin_approx_refine(k: int, outer_approximation: bool,
 
             # Turn the quadratic constraint into a linear constraint
             constraint_data["body"]["quadratic"] = []
+            # Keep the coefficient either in the surrogate or in the original constraint.
             if coefficient_surrogate:
                 constraint_data["body"]["linear"].append({"var": surrogate_var_name, "coef": 1.0})
             else:

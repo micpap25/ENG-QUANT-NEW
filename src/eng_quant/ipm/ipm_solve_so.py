@@ -16,9 +16,15 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 alpha_sched: list[float] = [.9, .7, .5, .3, .1, .01], alpha_min: float = 1e-3,
                 saund_tom: bool = False, saund_tom_factor: float = 1e-16,
                 sparse: bool = False, classic_ilu: bool = False,
-                refinement_iters: int = 3, ilu_drop_tol: float = 1e-4,
+                refinement_iters: int = 3, ir_rtol: float = 1e-6,
+                ilu_drop_tol: float = 1e-4, symmetric_scaling: bool = False,
                 omega_bound: bool = True, sym_neighborhood: bool = True,
                 infeas_factor: float = 2.0, verbose: bool = False):
+    """Solve a relaxed LP using the second-order split-multiplier IPM.
+
+    See :mod:`eng_quant.ipm` for the shared numerical and linear-system option
+    descriptions, including the split-formulation controls.
+    """
     np.set_printoptions(linewidth=200)
 
     # Gurobi output pops up here because of license file
@@ -63,7 +69,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
     assert G.shape == (e_bar, n)
     assert len(u) == n
     
-    # Run II-IPM
+    # Initialize primal variables at zero and complementarity pairs positively.
     x = np.zeros(n)
     y = np.ones(i_bar) * omega
     w1 = np.ones(e_bar) * omega
@@ -140,6 +146,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
         ATy = A.T @ y
         GTw1_w2 = G.T @ (w1 - w2)
 
+        # Eliminate complementarity variables to assemble the normal-equations matrix.
         if sparse:
             M = (ATZ1_1Y @ A + GTZ_1W @ G
                 + scipy.sparse.diags_array(qz4_1 + lamz5_1)).tocsc()
@@ -151,9 +158,24 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
             if saund_tom:
                 M += saund_tom_factor * np.eye(M.shape[0])
 
-        # Predictor Step
+        symmetric_scale = np.ones(n)
+        if symmetric_scaling:
+            if sparse:
+                row_max = np.asarray(np.abs(M).max(axis=1).toarray()).ravel()
+            else:
+                row_max = np.max(np.abs(M), axis=1)
+            np.divide(1.0, np.sqrt(row_max), out=symmetric_scale, where=row_max > 0)
+
+            if sparse:
+                D = scipy.sparse.diags(symmetric_scale, format="csc")
+                M = D @ M @ D
+            else:
+                M = symmetric_scale[:, None] * M * symmetric_scale[None, :]
+
+        # Solve the affine predictor direction before forming the centering correction.
         r_aff = ATZ1_1Y @ b_Ax + GTZ_1W @ h_Gx + qz4_1 * u_x - lamz5_1 * x \
             - c - ATy - GTw1_w2 - q + lam
+        r_aff = symmetric_scale * r_aff
 
         if classic_ilu:
             M_csc = scipy.sparse.csc_matrix(M)
@@ -177,6 +199,8 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 delta_x_aff = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(r_aff):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -188,6 +212,8 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
         else:
             M_lu, M_piv = scipy.linalg.lu_factor(M)
             delta_x_aff = scipy.linalg.lu_solve((M_lu, M_piv), r_aff)
+
+        delta_x_aff = symmetric_scale * delta_x_aff
 
         # Recover the steps
         Adelta_x_aff = A @ delta_x_aff
@@ -258,7 +284,9 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 + A.T @ (z1_1 * delta_y_aff * delta_z1_aff) \
                 + G.T @ (z2_1 * delta_w1_aff * delta_z2_aff - z3_1 * delta_w2_aff * delta_z3_aff)\
                 + z4_1 * (delta_q_aff * delta_z4_aff) - z5_1 * (delta_lam_aff * delta_z5_aff)
+        r_cent = symmetric_scale * r_cent
 
+        # Solve the centering direction using the predictor-corrector right-hand side.
         if classic_ilu:
             delta_x_cent = M_ichol(r_cent)
             if verbose:
@@ -277,6 +305,8 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
                 if not np.isfinite(candidate_norm) or candidate_norm >= residual_norm:
                     break
                 delta_x_cent = candidate
+                if candidate_norm <= ir_rtol * np.linalg.norm(r_cent):
+                    break
                 if verbose:
                     print(
                         f"Refinement iteration {refine_step + 1} "
@@ -286,6 +316,8 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
             delta_x_cent = M_solver(r_cent)
         else:
             delta_x_cent = scipy.linalg.lu_solve((M_lu, M_piv), r_cent)
+
+        delta_x_cent = symmetric_scale * delta_x_cent
 
         Adelta_x_cent = A @ delta_x_cent
         Gdelta_x_cent = G @ delta_x_cent
@@ -314,6 +346,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
         delta_z4 = delta_z4_aff + delta_z4_cent
         delta_z5 = delta_z5_aff + delta_z5_cent
 
+        # Limit the step so positive dual and slack variables stay nonnegative.
         alpha_star_y = ratio(y, delta_y)
         alpha_star_w1 = ratio(w1, delta_w1)
         alpha_star_w2 = ratio(w2, delta_w2)
@@ -346,6 +379,7 @@ def ipm_solve_so(f_name: str = "linear_approx.json",
 
         is_neighbor = False
 
+        # Try fractions of the maximum positive step until the neighborhood tests pass.
         for alpha_factor in alpha_sched:
             alpha = alpha_factor * alpha_max
             if alpha <= alpha_min:
